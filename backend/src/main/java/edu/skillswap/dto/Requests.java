@@ -25,7 +25,7 @@ public final class Requests {
     public static class Signup {
         @NotBlank @Size(min = 2, max = 80) public String name;
         @NotBlank @Email @Size(max = 160) public String email;
-        @NotBlank @Pattern(regexp = PASSWORD) public String password;
+        @NotBlank @Pattern(regexp = PASSWORD, message = "Password must be 10+ chars with uppercase, lowercase and a digit") public String password;
         @Size(max = 80) public String major = "";
     }
 
@@ -33,6 +33,11 @@ public final class Requests {
         @NotBlank @Size(min = 3, max = 160) public String identifier;
         @NotBlank @Size(max = 128) public String password;
         public boolean rememberMe = false;
+    }
+
+    public static class ChangePassword {
+        @NotBlank @Size(max = 128) public String currentPassword;
+        @NotBlank @Pattern(regexp = PASSWORD, message = "Password must be 10+ chars with uppercase, lowercase and a digit") public String newPassword;
     }
 
     public static class VerifyEmail {
@@ -47,7 +52,7 @@ public final class Requests {
     public static class ResetPassword {
         @NotBlank @Email public String email;
         @NotBlank @Pattern(regexp = "^\\d{6}$") public String code;
-        @NotBlank @Pattern(regexp = PASSWORD) public String password;
+        @NotBlank @Pattern(regexp = PASSWORD, message = "Password must be 10+ chars with uppercase, lowercase and a digit") public String password;
     }
 
     public static class TwoFactor {
@@ -90,6 +95,10 @@ public final class Requests {
     public static class Connect {
         @Size(max = 60) public String skill;
         @Size(max = 280) public String message = "";
+    }
+
+    public static class ConnectionRequestAction {
+        @NotBlank @Pattern(regexp = "^(accept|decline)$") public String action;
     }
 
     public static class CreateSession {

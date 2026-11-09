@@ -11,6 +11,7 @@ import SessionsScreen from './screens/SessionsScreen';
 import AdminPanel from './screens/AdminPanel';
 import LegalPage from './screens/LegalPage';
 import AppShell from './components/AppShell';
+import Toaster from './components/Toaster';
 import { api } from './api/client';
 import { useAppStore, type PublicUser } from './store/appStore';
 import { canAccessAdminPanel } from '@shared/rbac';
@@ -35,6 +36,7 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   const location = useLocation();
   if (!authLoaded) return <Navigate to="/" replace state={{ from: location }} />;
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  if (user.mustChangePassword) return <Navigate to="/login?mode=change-password" replace />;
   return children;
 }
 
@@ -64,6 +66,7 @@ export default function App() {
         </Route>
         <Route path="*" element={<Navigate to="/app" replace />} />
       </Routes>
+      <Toaster />
     </HashRouter>
   );
 }

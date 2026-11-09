@@ -64,7 +64,7 @@ public class SessionController {
                                                       HttpServletRequest request,
                                                       HttpServletResponse response) {
         AuthUser me = AuthContext.requireAuth(request);
-        rateLimit.check("invite", request, response, 30, 60 * 60 * 1000L, "Too many invites. Try again later.");
+        rateLimit.check("invite", request, response, 30, 60 * 60 * 1000L, "Too many attempts");
         String recipientId = body.recipientId.trim();
         if (recipientId.equals(me.id())) {
             throw new ApiException(400, "Cannot schedule with yourself");
@@ -91,30 +91,15 @@ public class SessionController {
         if (meetingUrl != null && meetingUrl.isEmpty()) {
             meetingUrl = null;
         }
-        List<Map<String, Object>> active = DbSupport.list(jdbc, """
-                SELECT id, start, duration_min FROM sessions
-                WHERE status IN ('Pending','Accepted','Rescheduled')
-                  AND (requester_id IN (?,?) OR recipient_id IN (?,?))
-                """, me.id(), recipientId, me.id(), recipientId);
-        Instant newStart = start;
-        Instant newEnd = newStart.plusSeconds(body.durationMin * 60L);
-        for (Map<String, Object> row : active) {
-            Instant existingStart = DbSupport.parseInstant(DbSupport.str(row, "start"));
-            if (existingStart == null) {
-                continue;
-            }
-            Instant existingEnd = existingStart.plusSeconds(DbSupport.intVal(row, "duration_min") * 60L);
-            if (existingStart.isBefore(newEnd) && existingEnd.isAfter(newStart)) {
-                throw new ApiException(409, "Time conflict with an existing session");
-            }
-        }
+        assertNoConflict(null, me.id(), recipientId, start, body.durationMin);
+
         String id = DbSupport.uuid();
         String message = body.message == null ? "" : body.message.trim();
         jdbc.update("""
-                INSERT INTO sessions (id, requester_id, recipient_id, skill_id, start, duration_min, status, message, meeting_url)
-                VALUES (?,?,?,?,?,?, 'Pending', ?, ?)
+                INSERT INTO sessions (id, requester_id, recipient_id, skill_id, start, duration_min, status, message, meeting_url, proposed_by)
+                VALUES (?,?,?,?,?,?, 'Pending', ?, ?, ?)
                 """, id, me.id(), recipientId, DbSupport.str(skill, "id"),
-                DbSupport.iso(start), body.durationMin, message, meetingUrl);
+                DbSupport.iso(start), body.durationMin, message, meetingUrl, me.id());
         DbSupport.notify(jdbc, recipientId, "New session invite",
                 DbSupport.str(me.row(), "name") + " proposed \"" + DbSupport.str(skill, "name")
                         + "\" at " + DbSupport.pretty(start) + ".",
@@ -143,6 +128,7 @@ public class SessionController {
         String recipientId = DbSupport.str(session, "recipient_id");
         String otherParty = isRequester ? recipientId : requesterId;
         String status = DbSupport.str(session, "status");
+        String proposedBy = DbSupport.str(session, "proposed_by");
         String myName = DbSupport.str(me.row(), "name");
 
         Consumer<String> transitionTo = to -> {
@@ -154,11 +140,14 @@ public class SessionController {
         try {
             switch (body.action) {
                 case "accept" -> {
-                    if (!isRecipient) {
+                    if ("Pending".equals(status) && !isRecipient) {
                         throw new ApiException(403, "Only the invitee can accept");
                     }
+                    if ("Rescheduled".equals(status) && proposedBy != null && proposedBy.equals(me.id())) {
+                        throw new ApiException(403, "Only the other participant can accept a rescheduled time");
+                    }
                     transitionTo.accept("Accepted");
-                    DbSupport.notify(jdbc, requesterId, "Session accepted", myName + " accepted your invite.", "invite", id);
+                    DbSupport.notify(jdbc, otherParty, "Session accepted", myName + " accepted the session time.", "invite", id);
                     audit.log(me.id(), "session_accepted", ip, "success", id);
                 }
                 case "decline" -> {
@@ -174,9 +163,14 @@ public class SessionController {
                     if (start == null || start.isBefore(Instant.now())) {
                         throw new ApiException(400, "New start must be in the future");
                     }
+                    int durationMin = DbSupport.intVal(session, "duration_min");
+                    assertNoConflict(id, requesterId, recipientId, start, durationMin);
                     transitionTo.accept("Rescheduled");
-                    jdbc.update("UPDATE sessions SET start = ?, updated_at = ? WHERE id = ?",
-                            DbSupport.iso(start), DbSupport.nowIso(), id);
+                    jdbc.update("""
+                            UPDATE sessions
+                            SET start = ?, proposed_by = ?, completed_by_requester = 0, completed_by_recipient = 0, updated_at = ?
+                            WHERE id = ?
+                            """, DbSupport.iso(start), me.id(), DbSupport.nowIso(), id);
                     DbSupport.notify(jdbc, otherParty, "Session rescheduled",
                             myName + " proposed a new time: " + DbSupport.pretty(start) + ".",
                             "invite", id);
@@ -225,6 +219,28 @@ public class SessionController {
                 FROM sessions s JOIN skills sk ON sk.id = s.skill_id WHERE s.id = ?
                 """, id);
         return ResponseEntity.ok(Api.map("ok", true, "session", sessionWithPartner(fresh, me.id())));
+    }
+
+    private void assertNoConflict(String excludeSessionId, String userA, String userB, Instant newStart, int durationMin) {
+        List<Map<String, Object>> active = DbSupport.list(jdbc, """
+                SELECT id, start, duration_min FROM sessions
+                WHERE status IN ('Pending','Accepted','Rescheduled')
+                  AND (requester_id IN (?,?) OR recipient_id IN (?,?))
+                """, userA, userB, userA, userB);
+        Instant newEnd = newStart.plusSeconds(durationMin * 60L);
+        for (Map<String, Object> row : active) {
+            if (excludeSessionId != null && excludeSessionId.equals(DbSupport.str(row, "id"))) {
+                continue;
+            }
+            Instant existingStart = DbSupport.parseInstant(DbSupport.str(row, "start"));
+            if (existingStart == null) {
+                continue;
+            }
+            Instant existingEnd = existingStart.plusSeconds(DbSupport.intVal(row, "duration_min") * 60L);
+            if (existingStart.isBefore(newEnd) && existingEnd.isAfter(newStart)) {
+                throw new ApiException(409, "Time conflict with an existing session");
+            }
+        }
     }
 
     private Map<String, Object> sessionWithPartner(Map<String, Object> row, String meId) {

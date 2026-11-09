@@ -18,7 +18,7 @@ public final class SessionStateMachine {
     static {
         TRANSITIONS.put(Status.Pending, List.of(Status.Accepted, Status.Declined, Status.Rescheduled));
         TRANSITIONS.put(Status.Accepted, List.of(Status.Completed, Status.Rescheduled, Status.Declined));
-        TRANSITIONS.put(Status.Rescheduled, List.of(Status.Accepted, Status.Declined));
+        TRANSITIONS.put(Status.Rescheduled, List.of(Status.Accepted, Status.Declined, Status.Rescheduled));
         TRANSITIONS.put(Status.Completed, List.of());
         TRANSITIONS.put(Status.Declined, List.of());
     }
@@ -53,7 +53,7 @@ public final class SessionStateMachine {
 
     public static boolean canMarkCompleted(String status, String sessionEndIso, String nowIso) {
         Status current = parse(status);
-        if (current != Status.Accepted && current != Status.Rescheduled) {
+        if (current != Status.Accepted) {
             return false;
         }
         Instant end = DbSupport.parseInstant(sessionEndIso);

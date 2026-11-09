@@ -3,8 +3,10 @@ package edu.skillswap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Error with an already-finalized JSON body (mirrors the Express res.status().json() calls). */
+/** Error with an already-finalized JSON body. */
 public class ApiException extends RuntimeException {
+
+    private static final long serialVersionUID = 1L;
 
     private final int status;
     private final Map<String, Object> body;
@@ -14,7 +16,7 @@ public class ApiException extends RuntimeException {
     }
 
     public ApiException(int status, Map<String, Object> body) {
-        super(body == null ? "Request failed" : String.valueOf(body.getOrDefault("error", "Request failed")));
+        super(body == null ? "API error" : String.valueOf(body.getOrDefault("error", "API error")));
         this.status = status;
         this.body = body == null ? new LinkedHashMap<>() : new LinkedHashMap<>(body);
     }

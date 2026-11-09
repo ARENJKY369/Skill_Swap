@@ -1,17 +1,24 @@
 package edu.skillswap.config;
 
+import edu.skillswap.service.DbSupport;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Component
 public class DatabaseInitializer {
 
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate tx;
 
-    public DatabaseInitializer(JdbcTemplate jdbc) {
+    public DatabaseInitializer(JdbcTemplate jdbc, TransactionTemplate tx) {
         this.jdbc = jdbc;
+        this.tx = tx;
     }
 
     public void initSchemaAndVerify() {
@@ -19,6 +26,12 @@ public class DatabaseInitializer {
         jdbc.execute("PRAGMA foreign_keys = ON");
 
         List<String> statements = List.of(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                  version TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """,
                 """
                 CREATE TABLE IF NOT EXISTS users (
                   id TEXT PRIMARY KEY,
@@ -46,11 +59,24 @@ public class DatabaseInitializer {
                   failed_attempts INTEGER NOT NULL DEFAULT 0,
                   locked_until TEXT,
                   restricted INTEGER NOT NULL DEFAULT 0,
-                  demo INTEGER NOT NULL DEFAULT 1,
+                  must_change_password INTEGER NOT NULL DEFAULT 0,
+                  demo INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
                   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS oauth_accounts (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  provider TEXT NOT NULL,
+                  provider_user_id TEXT NOT NULL,
+                  email TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  UNIQUE (provider, provider_user_id)
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user ON oauth_accounts(user_id)",
                 """
                 CREATE TABLE IF NOT EXISTS auth_sessions (
                   id TEXT PRIMARY KEY,
@@ -68,6 +94,7 @@ public class DatabaseInitializer {
                   id TEXT PRIMARY KEY,
                   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                   token_hash TEXT NOT NULL UNIQUE,
+                  remember_me INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
                   expires_at TEXT NOT NULL
                 )
@@ -90,6 +117,7 @@ public class DatabaseInitializer {
                   status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Accepted','Declined','Rescheduled','Completed')),
                   message TEXT NOT NULL DEFAULT '',
                   meeting_url TEXT,
+                  proposed_by TEXT,
                   completed_by_requester INTEGER NOT NULL DEFAULT 0,
                   completed_by_recipient INTEGER NOT NULL DEFAULT 0,
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -188,7 +216,81 @@ public class DatabaseInitializer {
             jdbc.execute(sql);
         }
 
-        // Touch the DB at boot, matching server/index.ts
+        runMigrations();
+
+        // Touch the DB at boot
         jdbc.queryForObject("SELECT 1", Integer.class);
+    }
+
+    private void runMigrations() {
+        ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("mfa_pending", "remember_me", "INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("sessions", "proposed_by", "TEXT");
+
+        applyMigrationOnce("V1__purge_demo_accounts_and_synthetic_metrics", () -> {
+            jdbc.execute("DELETE FROM admin_metrics");
+            purgeDemoUsersInternal();
+        });
+
+        // Idempotent safety net: if an older DB file still carries demo=1 rows, purge them and all linked rows.
+        Integer remainingDemo = jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE demo = 1", Integer.class);
+        if (remainingDemo != null && remainingDemo > 0) {
+            tx.executeWithoutResult(status -> purgeDemoUsersInternal());
+        }
+    }
+
+    private void purgeDemoUsersInternal() {
+        List<Map<String, Object>> demoUsers = DbSupport.list(jdbc, "SELECT id FROM users WHERE demo = 1");
+        if (demoUsers.isEmpty()) {
+            return;
+        }
+        for (Map<String, Object> row : demoUsers) {
+            String userId = DbSupport.str(row, "id");
+            jdbc.update("DELETE FROM oauth_accounts WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM auth_sessions WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM mfa_pending WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM email_codes WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM notifications WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM connection_requests WHERE from_id = ? OR to_id = ?", userId, userId);
+            jdbc.update("DELETE FROM reviews WHERE reviewer_id = ? OR reviewee_id = ?", userId, userId);
+            jdbc.update("DELETE FROM sessions WHERE requester_id = ? OR recipient_id = ?", userId, userId);
+            jdbc.update("DELETE FROM audit_log WHERE actor_id = ?", userId);
+            jdbc.update("DELETE FROM users WHERE id = ?", userId);
+        }
+        // Recalculate ratings for any real users who may have interacted with purged demo accounts
+        List<Map<String, Object>> realUsers = DbSupport.list(jdbc, "SELECT id FROM users");
+        for (Map<String, Object> u : realUsers) {
+            String uid = DbSupport.str(u, "id");
+            Map<String, Object> agg = DbSupport.one(jdbc,
+                    "SELECT AVG(overall) AS avg, COUNT(*) AS n FROM reviews WHERE reviewee_id = ?", uid);
+            double avg = DbSupport.doubleVal(agg, "avg");
+            int count = DbSupport.intVal(agg, "n");
+            jdbc.update("UPDATE users SET avg_rating = ?, review_count = ? WHERE id = ?",
+                    Math.round(avg * 10.0) / 10.0, count, uid);
+        }
+        System.out.printf("[migration] Purged %d legacy demo account(s) and all linked records%n", demoUsers.size());
+    }
+
+    private void applyMigrationOnce(String version, Runnable action) {
+        Map<String, Object> applied = DbSupport.one(jdbc,
+                "SELECT version FROM schema_migrations WHERE version = ?", version);
+        if (applied != null) {
+            return;
+        }
+        tx.executeWithoutResult(status -> {
+            action.run();
+            jdbc.update("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    version, DbSupport.nowIso());
+        });
+    }
+
+    private void ensureColumn(String table, String column, String definition) {
+        Set<String> columns = new HashSet<>();
+        jdbc.query("PRAGMA table_info(" + table + ")", rs -> {
+            columns.add(rs.getString("name"));
+        });
+        if (!columns.contains(column)) {
+            jdbc.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+        }
     }
 }

@@ -4,9 +4,12 @@ import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 @Component
 public class AppProperties {
@@ -17,13 +20,16 @@ public class AppProperties {
     private final String appSecret;
     private final List<String> corsOrigins;
     private final String publicBaseUrl;
+    private final String frontendUrl;
     private final String smtpUrl;
+    private final String adminEmail;
+    private final String adminInitialPassword;
     private final String googleClientId;
     private final String googleClientSecret;
     private final String facebookClientId;
     private final String facebookClientSecret;
-    private final String xClientId;
-    private final String xClientSecret;
+    private final String twitterClientId;
+    private final String twitterClientSecret;
     private final String linkedinClientId;
     private final String linkedinClientSecret;
 
@@ -62,26 +68,49 @@ public class AppProperties {
         }
 
         String rawCors = env("CORS_ORIGIN", "");
-        if (rawCors.isBlank()) {
-            this.corsOrigins = List.of();
-        } else {
-            this.corsOrigins = Arrays.stream(rawCors.split(","))
+        Set<String> origins = new LinkedHashSet<>();
+        if (!rawCors.isBlank()) {
+            Arrays.stream(rawCors.split(","))
                     .map(String::trim)
                     .filter(s -> !s.isEmpty())
-                    .toList();
+                    .forEach(origins::add);
         }
+        if (!this.prod) {
+            origins.add("http://localhost:5173");
+            origins.add("http://127.0.0.1:5173");
+        }
+        this.corsOrigins = List.copyOf(new ArrayList<>(origins));
 
         String baseUrl = env("PUBLIC_BASE_URL", "http://localhost:" + this.port);
-        this.publicBaseUrl = baseUrl.isBlank() ? "http://localhost:" + this.port : baseUrl.trim();
+        this.publicBaseUrl = stripTrailingSlash(baseUrl.isBlank() ? "http://localhost:" + this.port : baseUrl.trim());
+
+        String defaultFrontend = this.prod ? this.publicBaseUrl : "http://localhost:5173";
+        String rawFrontend = env("FRONTEND_URL", defaultFrontend);
+        this.frontendUrl = stripTrailingSlash(rawFrontend.isBlank() ? defaultFrontend : rawFrontend.trim());
+
         this.smtpUrl = env("SMTP_URL", "");
-        this.googleClientId = env("GOOGLE_CLIENT_ID", "");
-        this.googleClientSecret = env("GOOGLE_CLIENT_SECRET", "");
-        this.facebookClientId = env("FACEBOOK_CLIENT_ID", "");
-        this.facebookClientSecret = env("FACEBOOK_CLIENT_SECRET", "");
-        this.xClientId = env("X_CLIENT_ID", "");
-        this.xClientSecret = env("X_CLIENT_SECRET", "");
-        this.linkedinClientId = env("LINKEDIN_CLIENT_ID", "");
-        this.linkedinClientSecret = env("LINKEDIN_CLIENT_SECRET", "");
+        this.adminEmail = env("ADMIN_EMAIL", "").trim();
+        this.adminInitialPassword = env("ADMIN_INITIAL_PASSWORD", "");
+
+        this.googleClientId = env("GOOGLE_CLIENT_ID", "").trim();
+        this.googleClientSecret = env("GOOGLE_CLIENT_SECRET", "").trim();
+        this.facebookClientId = env("FACEBOOK_CLIENT_ID", "").trim();
+        this.facebookClientSecret = env("FACEBOOK_CLIENT_SECRET", "").trim();
+
+        String twId = env("TWITTER_CLIENT_ID", "").trim();
+        String twSecret = env("TWITTER_CLIENT_SECRET", "").trim();
+        this.twitterClientId = !twId.isBlank() ? twId : env("X_CLIENT_ID", "").trim();
+        this.twitterClientSecret = !twSecret.isBlank() ? twSecret : env("X_CLIENT_SECRET", "").trim();
+
+        this.linkedinClientId = env("LINKEDIN_CLIENT_ID", "").trim();
+        this.linkedinClientSecret = env("LINKEDIN_CLIENT_SECRET", "").trim();
+    }
+
+    private static String stripTrailingSlash(String url) {
+        if (url != null && url.endsWith("/") && url.length() > 1) {
+            return url.substring(0, url.length() - 1);
+        }
+        return url;
     }
 
     private static String env(String key, String fallback) {
@@ -98,13 +127,18 @@ public class AppProperties {
     public String getAppSecret() { return appSecret; }
     public List<String> getCorsOrigins() { return corsOrigins; }
     public String getPublicBaseUrl() { return publicBaseUrl; }
+    public String getFrontendUrl() { return frontendUrl; }
     public String getSmtpUrl() { return smtpUrl; }
+    public String getAdminEmail() { return adminEmail; }
+    public String getAdminInitialPassword() { return adminInitialPassword; }
     public String getGoogleClientId() { return googleClientId; }
     public String getGoogleClientSecret() { return googleClientSecret; }
     public String getFacebookClientId() { return facebookClientId; }
     public String getFacebookClientSecret() { return facebookClientSecret; }
-    public String getXClientId() { return xClientId; }
-    public String getXClientSecret() { return xClientSecret; }
+    public String getTwitterClientId() { return twitterClientId; }
+    public String getTwitterClientSecret() { return twitterClientSecret; }
+    public String getXClientId() { return twitterClientId; }
+    public String getXClientSecret() { return twitterClientSecret; }
     public String getLinkedinClientId() { return linkedinClientId; }
     public String getLinkedinClientSecret() { return linkedinClientSecret; }
 }

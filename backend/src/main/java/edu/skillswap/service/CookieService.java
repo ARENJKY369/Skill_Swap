@@ -11,10 +11,10 @@ import org.springframework.stereotype.Service;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
-import java.security.SecureRandom;
 
 @Service
 public class CookieService {
@@ -23,6 +23,7 @@ public class CookieService {
     public static final String CSRF_COOKIE = "ss_csrf";
     public static final String CSRF_HEADER = "x-csrf-token";
     public static final String OAUTH_STATE_COOKIE = "ss_oauth_state";
+    public static final String OAUTH_PKCE_COOKIE = "ss_oauth_pkce";
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -56,17 +57,17 @@ public class CookieService {
         String token = randomToken(32);
         ResponseCookie cookie = ResponseCookie.from(CSRF_COOKIE, token)
                 .httpOnly(false)
-                .sameSite("Strict")
+                .sameSite("Lax")
                 .secure(props.isProd())
                 .path("/")
-                .maxAge(Duration.ofHours(2))
+                .maxAge(Duration.ofHours(12))
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return token;
     }
 
     public String issueOauthState(HttpServletResponse response) {
-        String state = randomToken(16);
+        String state = randomToken(24);
         ResponseCookie cookie = ResponseCookie.from(OAUTH_STATE_COOKIE, state)
                 .httpOnly(true)
                 .sameSite("Lax")
@@ -78,10 +79,28 @@ public class CookieService {
         return state;
     }
 
+    public String issueOauthPkceVerifier(HttpServletResponse response) {
+        String verifier = randomToken(32);
+        ResponseCookie cookie = ResponseCookie.from(OAUTH_PKCE_COOKIE, verifier)
+                .httpOnly(true)
+                .sameSite("Lax")
+                .secure(props.isProd())
+                .path("/")
+                .maxAge(Duration.ofMinutes(10))
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+        return verifier;
+    }
+
+    public void clearOauthCookies(HttpServletResponse response) {
+        clear(response, OAUTH_STATE_COOKIE, true);
+        clear(response, OAUTH_PKCE_COOKIE, true);
+    }
+
     public void createSession(HttpServletResponse response, String userId, String ip,
                               String userAgent, boolean rememberMe) {
         String token = randomToken(32);
-        Instant expires = Instant.now().plus(Duration.ofDays(rememberMe ? 30 : 7));
+        Instant expires = Instant.now().plus(rememberMe ? Duration.ofDays(30) : Duration.ofHours(24));
         String agent = userAgent == null ? "" : userAgent;
         if (agent.length() > 300) {
             agent = agent.substring(0, 300);
@@ -89,14 +108,23 @@ public class CookieService {
         jdbc.update(
                 "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, ip, user_agent) VALUES (?,?,?,?,?,?)",
                 DbSupport.uuid(), userId, hashToken(token), DbSupport.iso(expires), ip, agent);
-        ResponseCookie cookie = ResponseCookie.from(SESSION_COOKIE, token)
+        ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from(SESSION_COOKIE, token)
                 .httpOnly(true)
-                .sameSite("Strict")
+                .sameSite("Lax")
                 .secure(props.isProd())
-                .path("/")
-                .maxAge(Duration.between(Instant.now(), expires))
-                .build();
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+                .path("/");
+        if (rememberMe) {
+            builder.maxAge(Duration.between(Instant.now(), expires));
+        }
+        response.addHeader(HttpHeaders.SET_COOKIE, builder.build().toString());
+    }
+
+    public void rotateSession(HttpServletResponse response, String oldTokenHash, String userId,
+                              String ip, String userAgent, boolean rememberMe) {
+        if (oldTokenHash != null && !oldTokenHash.isBlank()) {
+            jdbc.update("DELETE FROM auth_sessions WHERE token_hash = ?", oldTokenHash);
+        }
+        createSession(response, userId, ip, userAgent, rememberMe);
     }
 
     public void destroyUserSessions(String userId) {
@@ -111,7 +139,7 @@ public class CookieService {
     private void clear(HttpServletResponse response, String name, boolean httpOnly) {
         ResponseCookie cookie = ResponseCookie.from(name, "")
                 .httpOnly(httpOnly)
-                .sameSite("Strict")
+                .sameSite("Lax")
                 .secure(props.isProd())
                 .path("/")
                 .maxAge(Duration.ZERO)

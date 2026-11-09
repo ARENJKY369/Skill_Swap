@@ -25,14 +25,24 @@ public class SpaErrorController implements ErrorController {
 
     @RequestMapping("/error")
     public ResponseEntity<?> error(HttpServletRequest request) {
-        String path = request.getRequestURI();
+        String correlationId = Api.correlationId(request);
+        Object origUri = request.getAttribute(RequestDispatcher.ERROR_REQUEST_URI);
+        String path = origUri instanceof String s ? s : request.getRequestURI();
         Object statusAttr = request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE);
         int status = statusAttr instanceof Number number ? number.intValue() : 404;
         if (path != null && path.startsWith("/api")) {
-            if (status == 404) {
-                return ResponseEntity.status(404).body(Api.map("error", "Not found"));
-            }
-            return ResponseEntity.status(status).body(Api.map("error", "Request failed"));
+            String message = switch (status) {
+                case 401 -> "Authentication required";
+                case 403 -> "Access denied";
+                case 404 -> "Endpoint not found";
+                case 405 -> "Method not allowed";
+                case 423 -> "Account locked";
+                case 429 -> "Too many attempts";
+                default -> "Internal server error";
+            };
+            return ResponseEntity.status(status)
+                    .header(Api.CORRELATION_HEADER, correlationId)
+                    .body(Api.map("error", message, "correlationId", correlationId));
         }
         Path index = Path.of("dist", "index.html");
         if (status == 404 && props.isProd() && Files.isRegularFile(index)) {
@@ -40,6 +50,8 @@ public class SpaErrorController implements ErrorController {
                     .contentType(MediaType.TEXT_HTML)
                     .body(new FileSystemResource(index));
         }
-        return ResponseEntity.status(status == 0 ? 404 : status).body(Api.map("error", "Not found"));
+        return ResponseEntity.status(status == 0 ? 404 : status)
+                .header(Api.CORRELATION_HEADER, correlationId)
+                .body(Api.map("error", "Not found", "correlationId", correlationId));
     }
 }

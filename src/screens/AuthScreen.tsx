@@ -1,17 +1,31 @@
-import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  User, Lock, Eye, EyeOff, ShieldCheck, Mail, GraduationCap, Loader2, ArrowLeft, BadgeCheck, Check,
+  User, Lock, Eye, EyeOff, ShieldCheck, Mail, GraduationCap, Loader2, ArrowLeft, BadgeCheck, Check, WifiOff, AlertCircle, KeyRound,
 } from 'lucide-react';
 import TitleBar from '../components/TitleBar';
 import CodeInput from '../components/CodeInput';
 import LegalModal from '../components/LegalModal';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, formatApiErrorDetail } from '../api/client';
 import { useAppStore, type PublicUser } from '../store/appStore';
 import { useToast } from '../lib/toastHook';
-import { PASSWORD_RULES, passwordStrength } from '../lib/format';
+import { PASSWORD_RULES, meetsPasswordPolicy, passwordStrength } from '../lib/format';
 
-type View = 'login' | 'signup' | 'verify' | 'forgot' | 'reset' | 'totp';
+type View = 'login' | 'signup' | 'verify' | 'forgot' | 'reset' | 'totp' | 'changePassword';
+
+interface ErrorBannerState {
+  message: string;
+  isNetwork: boolean;
+  status?: number;
+  correlationId?: string;
+}
+
+interface OAuthProviderInfo {
+  id: string;
+  label: string;
+  configured: boolean;
+  authPath: string;
+}
 
 const MAJORS = [
   'Computer Science', 'Mechanical Engineering', 'Electrical Engineering', 'Civil Engineering',
@@ -42,20 +56,78 @@ const LinkedInIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="#E7E9EA" d="M6.9 8.6H3.3V21h3.6V8.6zM5.1 3.5a2.1 2.1 0 1 0 .1 4.2 2.1 2.1 0 0 0-.1-4.2zM9.6 21h3.6v-6.3c0-1.6.8-2.6 2.2-2.6 1.5 0 2.5 1 2.5 3.2V21h3.6v-7.1c0-3.5-1.7-5.7-4.8-5.7-2 0-3.3 1.1-4 2.2h-.1V8.6H9.6V21z"/></svg>
 );
 
+function toErrorBanner(err: unknown, fallback: string): ErrorBannerState {
+  if (err instanceof ApiError) {
+    return {
+      message: err.message,
+      isNetwork: err.isNetworkError,
+      status: err.status > 0 ? err.status : undefined,
+      correlationId: err.correlationId,
+    };
+  }
+  return {
+    message: err instanceof Error && err.message ? err.message : fallback,
+    isNetwork: false,
+  };
+}
+
+function ErrorBanner({ err }: { err: ErrorBannerState | null }) {
+  if (!err) return null;
+  return (
+    <div
+      className="text-2xs text-red-200 border border-red-500/35 bg-red-500/10 rounded-input px-2.5 py-2 flex items-start gap-2"
+      role="alert"
+    >
+      {err.isNetwork ? (
+        <WifiOff size={14} className="text-red-300 shrink-0 mt-0.5" aria-hidden="true" />
+      ) : (
+        <AlertCircle size={14} className="text-red-300 shrink-0 mt-0.5" aria-hidden="true" />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-red-200">{err.message}</p>
+        <p className="text-[10px] text-red-300/80 mt-0.5 num">
+          {err.isNetwork
+            ? 'Network failure — backend server unreachable'
+            : [
+                err.status ? `HTTP ${err.status}` : null,
+                err.correlationId ? `Ref: ${err.correlationId}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ') || 'Server response'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const SOCIAL_BUTTONS = [
+  { key: 'google', label: 'Google', icon: <GoogleIcon /> },
+  { key: 'facebook', label: 'Facebook', icon: <FacebookIcon /> },
+  { key: 'twitter', label: 'X', icon: <XIcon /> },
+  { key: 'linkedin', label: 'LinkedIn', icon: <LinkedInIcon /> },
+] as const;
+
 export default function AuthScreen() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
+  const currentUser = useAppStore((s) => s.user);
   const setUser = useAppStore((s) => s.setUser);
 
-  const [view, setView] = useState<View>('login');
+  const [view, setView] = useState<View>(() =>
+    searchParams.get('mode') === 'change-password' ? 'changePassword' : 'login',
+  );
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | null>(null);
 
+  // OAuth provider availability loaded from backend
+  const [oauthProviders, setOauthProviders] = useState<Record<string, OAuthProviderInfo> | null>(null);
+
   // login
-  const [identifier, setIdentifier] = useState('ava@skillswap.edu');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<ErrorBannerState | null>(null);
   const [busy, setBusy] = useState(false);
 
   // signup
@@ -64,10 +136,10 @@ export default function AuthScreen() {
   const [signupPassword, setSignupPassword] = useState('');
   const [major, setMajor] = useState(MAJORS[0]);
   const [terms, setTerms] = useState(false);
-  const [signupError, setSignupError] = useState<string | null>(null);
+  const [signupError, setSignupError] = useState<ErrorBannerState | null>(null);
   const [showSignupPassword, setShowSignupPassword] = useState(false);
 
-  // verification / reset / totp
+  // verification / reset / totp / changePassword
   const [pendingEmail, setPendingEmail] = useState('');
   const [devCode, setDevCode] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -77,8 +149,91 @@ export default function AuthScreen() {
   const [recoveryCode, setRecoveryCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
+  // mandatory initial password change
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [nextPasswordInput, setNextPasswordInput] = useState('');
+  const [showNextPassword, setShowNextPassword] = useState(false);
+  const [changePwError, setChangePwError] = useState<ErrorBannerState | null>(null);
+
+  const handledUrlAction = useRef(false);
+
   const strength = passwordStrength(signupPassword);
+  const changePwStrength = passwordStrength(nextPasswordInput);
   const recoveryOk = recoveryCode.trim().length >= 6;
+
+  // Discover configured OAuth providers from backend (zero client IDs or secrets exposed)
+  useEffect(() => {
+    api
+      .get<{ providers: Record<string, OAuthProviderInfo> }>('/api/auth/oauth/providers')
+      .then((res) => setOauthProviders(res.providers))
+      .catch(() => setOauthProviders(null));
+  }, []);
+
+  // Switch to mandatory password change if authenticated user still has mustChangePassword=true
+  useEffect(() => {
+    if (currentUser?.mustChangePassword) {
+      setView('changePassword');
+    }
+  }, [currentUser?.mustChangePassword]);
+
+  // Handle query parameters from OAuth callbacks and dev-mode email links
+  useEffect(() => {
+    const oauthErr = searchParams.get('oauthError');
+    const verifyErr = searchParams.get('verifyError');
+    const verifyEmail = searchParams.get('verifyEmail');
+    const resetEmail = searchParams.get('resetEmail');
+    const queryCode = searchParams.get('code');
+    const mode = searchParams.get('mode');
+
+    if (mode === 'change-password') {
+      setView('changePassword');
+      return;
+    }
+
+    if (oauthErr) {
+      setView('login');
+      setLoginError({ message: oauthErr, isNetwork: false });
+      setSearchParams({}, { replace: true });
+      return;
+    }
+
+    if (verifyErr) {
+      setView('login');
+      setLoginError({ message: verifyErr, isNetwork: false });
+      setSearchParams({}, { replace: true });
+      return;
+    }
+
+    if (verifyEmail && queryCode && !handledUrlAction.current) {
+      handledUrlAction.current = true;
+      setPendingEmail(verifyEmail);
+      setCode(queryCode);
+      setView('verify');
+      setSearchParams({}, { replace: true });
+      setBusy(true);
+      api
+        .post<{ user: PublicUser }>('/api/auth/verify-email', { email: verifyEmail, code: queryCode })
+        .then((res) => {
+          setUser(res.user);
+          toast.success('Email verified', `Welcome to SkillSwap, ${res.user.name.split(' ')[0]}!`);
+          navigate('/app', { replace: true });
+        })
+        .catch((err) => {
+          toast.error('Verification failed', err instanceof ApiError ? err.message : 'Invalid code',);
+          setCode('');
+        })
+        .finally(() => setBusy(false));
+      return;
+    }
+
+    if (resetEmail && queryCode && !handledUrlAction.current) {
+      handledUrlAction.current = true;
+      setPendingEmail(resetEmail);
+      setCode(queryCode);
+      setView('reset');
+      setSearchParams({}, { replace: true });
+    }
+  }, [navigate, searchParams, setSearchParams, setUser, toast]);
 
   const startResendCooldown = () => {
     setResendIn(30);
@@ -90,37 +245,49 @@ export default function AuthScreen() {
     }, 1000);
   };
 
-  const handleAuthSuccess = (user: PublicUser) => {
+  const handleAuthSuccess = (user: PublicUser, knownPassword?: string) => {
     setUser(user);
+    if (user.mustChangePassword) {
+      if (knownPassword) setCurrentPasswordInput(knownPassword);
+      setView('changePassword');
+      toast.warning('Password change required', 'Update your initial bootstrap password to continue.');
+      return;
+    }
     toast.success(`Welcome back, ${user.name.split(' ')[0]}`);
-    navigate('/app', { replace: true });
+    navigate(user.role === 'admin' ? '/app/admin' : '/app', { replace: true });
   };
 
   const submitLogin = async (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setLoginError(null);
+    if (!identifier.trim() || !password) {
+      setLoginError({ message: 'Enter your email/username and password.', isNetwork: false });
+      return;
+    }
+    setBusy(true);
     try {
-      const res = await api.post<{ user?: PublicUser; needsTotp?: boolean; mfaToken?: string }>(
-        '/api/auth/login',
-        { identifier: identifier.trim(), password, rememberMe },
-      );
+      const res = await api.post<{
+        user?: PublicUser;
+        needsTotp?: boolean;
+        mfaToken?: string;
+        mustChangePassword?: boolean;
+      }>('/api/auth/login', { identifier: identifier.trim(), password, rememberMe });
       if (res.needsTotp && res.mfaToken) {
         setMfaToken(res.mfaToken);
         setView('totp');
         return;
       }
-      if (res.user) handleAuthSuccess(res.user);
+      if (res.user) handleAuthSuccess(res.user, password);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED') {
-        const emailAddr = String(err.payload?.email ?? identifier);
+        const emailAddr = String(err.payload?.email ?? identifier.trim());
         setPendingEmail(emailAddr);
-        setView('verify');
         setLoginError(null);
-        toast.info('Verify your email', 'We need to confirm it is you before the first sign-in.');
+        setView('verify');
+        toast.warning('Email not verified', 'Enter the 6-digit verification code or use the dev console link.');
         return;
       }
-      setLoginError(err instanceof ApiError ? err.message : 'Invalid credentials');
+      setLoginError(toErrorBanner(err, 'Invalid credentials'));
     } finally {
       setBusy(false);
     }
@@ -129,21 +296,44 @@ export default function AuthScreen() {
   const submitSignup = async (e: FormEvent) => {
     e.preventDefault();
     setSignupError(null);
-    if (!terms) { setSignupError('Agree to the Terms and Privacy Policy to continue.'); return; }
-    if (strength < 3) { setSignupError('Password is too weak — see the checklist.'); return; }
+    if (fullName.trim().length < 2) {
+      setSignupError({ message: 'Enter your full name (at least 2 characters).', isNetwork: false });
+      return;
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+      setSignupError({ message: 'Enter a valid email address.', isNetwork: false });
+      return;
+    }
+    if (!meetsPasswordPolicy(signupPassword)) {
+      setSignupError({
+        message: 'Password must be at least 10 characters with uppercase, lowercase, and a digit.',
+        isNetwork: false,
+      });
+      return;
+    }
+    if (!terms) {
+      setSignupError({ message: 'Agree to the Terms and Privacy Policy to continue.', isNetwork: false });
+      return;
+    }
     setBusy(true);
     try {
-      const res = await api.post<{ needsVerification: boolean; email?: string; devVerificationCode?: string }>(
-        '/api/auth/signup',
-        { name: fullName.trim(), email: email.trim(), password: signupPassword, major },
-      );
+      const res = await api.post<{
+        needsVerification: boolean;
+        email?: string;
+        devVerificationCode?: string;
+      }>('/api/auth/signup', {
+        name: fullName.trim(),
+        email: email.trim(),
+        password: signupPassword,
+        major,
+      });
       setPendingEmail(res.email ?? email.trim());
       setDevCode(res.devVerificationCode ?? null);
       setCode('');
       setView('verify');
       startResendCooldown();
     } catch (err) {
-      setSignupError(err instanceof ApiError ? err.message : 'Could not create the account');
+      setSignupError(toErrorBanner(err, 'Could not create the account'));
     } finally {
       setBusy(false);
     }
@@ -154,7 +344,10 @@ export default function AuthScreen() {
     if (code.length !== 6) return;
     setBusy(true);
     try {
-      const res = await api.post<{ user: PublicUser }>('/api/auth/verify-email', { email: pendingEmail, code });
+      const res = await api.post<{ user: PublicUser }>('/api/auth/verify-email', {
+        email: pendingEmail,
+        code,
+      });
       handleAuthSuccess(res.user);
     } catch (err) {
       toast.error('Verification failed', err instanceof ApiError ? err.message : 'Invalid code');
@@ -166,13 +359,16 @@ export default function AuthScreen() {
 
   const resendCode = async () => {
     try {
-      const res = await api.post<{ devVerificationCode?: string }>('/api/auth/resend-verification', { email: pendingEmail });
+      const res = await api.post<{ devVerificationCode?: string }>(
+        '/api/auth/resend-verification',
+        { email: pendingEmail },
+      );
       setDevCode(res.devVerificationCode ?? null);
       setCode('');
       startResendCooldown();
-      toast.info('Code resent', `A new code is on its way to ${pendingEmail}.`);
+      toast.info('Code resent', `Check your inbox or server console for ${pendingEmail}.`);
     } catch (err) {
-      toast.error('Could not resend', err instanceof ApiError ? err.message : undefined);
+      toast.error('Could not resend', err instanceof ApiError ? err.message : formatApiErrorDetail(err));
     }
   };
 
@@ -180,12 +376,18 @@ export default function AuthScreen() {
     e.preventDefault();
     setBusy(true);
     try {
-      const res = await api.post<{ devResetCode?: string }>('/api/auth/forgot-password', { email: pendingEmail || email });
+      const res = await api.post<{ devResetCode?: string }>('/api/auth/forgot-password', {
+        email: (pendingEmail || email).trim(),
+      });
       setDevCode(res.devResetCode ?? null);
       setView('reset');
       setCode('');
-    } catch {
-      setView('reset'); // no enumeration — behave the same either way
+    } catch (err) {
+      if (err instanceof ApiError && err.isNetworkError) {
+        toast.error(err.message, formatApiErrorDetail(err));
+      } else {
+        setView('reset'); // prevent email enumeration on normal requests
+      }
     } finally {
       setBusy(false);
     }
@@ -193,9 +395,17 @@ export default function AuthScreen() {
 
   const submitReset = async (e: FormEvent) => {
     e.preventDefault();
+    if (!meetsPasswordPolicy(newPassword)) {
+      toast.error('Weak password', 'Use 10+ characters with uppercase, lowercase, and a digit.');
+      return;
+    }
     setBusy(true);
     try {
-      await api.post('/api/auth/reset-password', { email: pendingEmail || email, code, password: newPassword });
+      await api.post('/api/auth/reset-password', {
+        email: (pendingEmail || email).trim(),
+        code,
+        password: newPassword,
+      });
       toast.success('Password updated', 'Sign in with your new password.');
       setView('login');
       setPassword('');
@@ -216,7 +426,7 @@ export default function AuthScreen() {
     setBusy(true);
     try {
       const res = await api.post<{ user: PublicUser }>('/api/auth/2fa', { mfaToken, code: payload });
-      handleAuthSuccess(res.user);
+      handleAuthSuccess(res.user, password);
     } catch (err) {
       toast.error('Invalid code', err instanceof ApiError ? err.message : 'Try again');
       setCode('');
@@ -225,13 +435,53 @@ export default function AuthScreen() {
     }
   };
 
-  const oauth = async (provider: string) => {
-    try {
-      const { url } = await api.get<{ url: string }>(`/api/auth/oauth/${provider}`);
-      window.location.assign(url);
-    } catch (err) {
-      toast.warning('OAuth not configured', err instanceof ApiError ? err.message : `Set ${provider.toUpperCase()}_CLIENT_ID in .env to enable this provider.`);
+  const submitChangePassword = async (e: FormEvent) => {
+    e.preventDefault();
+    setChangePwError(null);
+    if (!meetsPasswordPolicy(nextPasswordInput)) {
+      setChangePwError({
+        message: 'New password must be 10+ characters with uppercase, lowercase, and a digit.',
+        isNetwork: false,
+      });
+      return;
     }
+    if (currentPasswordInput === nextPasswordInput) {
+      setChangePwError({
+        message: 'New password must be different from the initial bootstrap password.',
+        isNetwork: false,
+      });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.post<{ user: PublicUser }>('/api/auth/change-password', {
+        currentPassword: currentPasswordInput,
+        newPassword: nextPasswordInput,
+      });
+      setUser(res.user);
+      setCurrentPasswordInput('');
+      setNextPasswordInput('');
+      setPassword('');
+      toast.success('Password updated', 'Your initial password has been replaced.');
+      navigate(res.user.role === 'admin' ? '/app/admin' : '/app', { replace: true });
+    } catch (err) {
+      setChangePwError(toErrorBanner(err, 'Could not update password'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startSocialLogin = (providerKey: string, label: string) => {
+    const info = oauthProviders?.[providerKey];
+    if (oauthProviders && (!info || !info.configured)) {
+      const msg = `${label} sign-in is not configured on this server`;
+      setLoginError({ message: msg, isNetwork: false, status: 501 });
+      toast.warning('Provider unavailable', msg);
+      return;
+    }
+    // Full-page redirect to the backend OAuth2 authorization endpoint (never fetch)
+    const targetPath = info?.authPath ?? `/oauth2/authorization/${providerKey}`;
+    window.location.assign(targetPath);
   };
 
   const isLogin = view === 'login';
@@ -261,7 +511,7 @@ export default function AuthScreen() {
                   key={id}
                   role="tab"
                   aria-selected={view === id}
-                  onClick={() => setView(id)}
+                  onClick={() => { setView(id); setLoginError(null); setSignupError(null); }}
                   className={`relative flex-1 h-10 text-xs font-semibold tracking-wide uppercase transition-colors ${
                     view === id ? 'text-cyan-300' : 'text-muted hover:text-ink'
                   }`}
@@ -277,34 +527,65 @@ export default function AuthScreen() {
             {/* ---------------- LOGIN ---------------- */}
             {isLogin && (
               <form onSubmit={submitLogin} className="flex flex-col gap-3.5" noValidate>
-                {loginError && <p className="text-2xs text-red-300 border border-red-500/30 bg-red-500/10 rounded-input px-2.5 py-2" role="alert">{loginError}</p>}
+                <ErrorBanner err={loginError} />
                 <div>
                   <label className="label" htmlFor="login-id">Username or Email</label>
                   <div className="relative">
                     <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" strokeWidth={1.5} aria-hidden="true" />
-                    <input id="login-id" className="field !pl-9" autoComplete="username" autoFocus
-                      value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="you@university.edu" required />
+                    <input
+                      id="login-id"
+                      className="field !pl-9"
+                      autoComplete="username"
+                      autoFocus
+                      value={identifier}
+                      onChange={(e) => setIdentifier(e.target.value)}
+                      placeholder="you@university.edu"
+                      required
+                    />
                   </div>
                 </div>
                 <div>
                   <label className="label" htmlFor="login-password">Password</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" strokeWidth={1.5} aria-hidden="true" />
-                    <input id="login-password" className="field !pl-9 !pr-10" type={showPassword ? 'text' : 'password'}
-                      autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••••" required />
-                    <button type="button" onClick={() => setShowPassword((v) => !v)}
+                    <input
+                      id="login-password"
+                      className="field !pl-9 !pr-10"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••••"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-ink"
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    >
                       {showPassword ? <EyeOff size={16} strokeWidth={1.5} /> : <Eye size={16} strokeWidth={1.5} />}
                     </button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-2 text-xs text-muted cursor-pointer select-none hover:text-ink">
-                    <input type="checkbox" className="accent-[#06B6D4] w-3.5 h-3.5" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} />
+                    <input
+                      type="checkbox"
+                      className="accent-[#06B6D4] w-3.5 h-3.5"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                    />
                     Remember Me
                   </label>
-                  <button type="button" className="text-xs text-accent hover:text-cyan-300 transition-colors" onClick={() => { setPendingEmail(identifier.includes('@') ? identifier : ''); setView('forgot'); }}>
+                  <button
+                    type="button"
+                    className="text-xs text-accent hover:text-cyan-300 transition-colors"
+                    onClick={() => {
+                      setPendingEmail(identifier.includes('@') ? identifier : '');
+                      setView('forgot');
+                    }}
+                  >
                     Forgot Password?
                   </button>
                 </div>
@@ -312,39 +593,46 @@ export default function AuthScreen() {
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <Lock size={15} strokeWidth={1.75} />} Sign In
                 </button>
 
-                {/* OAuth */}
+                {/* Social OAuth2 Authorization Code Redirects */}
                 <div className="flex items-center gap-3 text-2xs text-muted" aria-hidden="true">
                   <span className="divider flex-1" /> or continue with <span className="divider flex-1" />
                 </div>
                 <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { id: 'google', label: 'Google', icon: <GoogleIcon /> },
-                    { id: 'facebook', label: 'Facebook', icon: <FacebookIcon /> },
-                    { id: 'x', label: 'X', icon: <XIcon /> },
-                    { id: 'linkedin', label: 'LinkedIn', icon: <LinkedInIcon /> },
-                  ].map(({ id, label, icon }) => (
-                    <button key={id} type="button" onClick={() => void oauth(id)} aria-label={`Sign in with ${label}`}
-                      className="h-9 flex items-center justify-center rounded-input border border-line bg-inset hover:border-accent hover:bg-panel-raised transition-colors">
-                      {icon}
-                    </button>
-                  ))}
+                  {SOCIAL_BUTTONS.map(({ key, label, icon }) => {
+                    const configured = oauthProviders ? Boolean(oauthProviders[key]?.configured) : true;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => startSocialLogin(key, label)}
+                        aria-label={configured ? `Sign in with ${label}` : `${label} sign-in is not configured on this server`}
+                        aria-disabled={!configured}
+                        title={configured ? `Continue with ${label}` : `${label} sign-in is not configured on this server`}
+                        className={`relative h-9 flex items-center justify-center rounded-input border transition-colors ${
+                          configured
+                            ? 'border-line bg-inset hover:border-accent hover:bg-panel-raised'
+                            : 'border-line/60 bg-inset/40 opacity-50 hover:border-amber-500/40'
+                        }`}
+                      >
+                        {icon}
+                        {!configured && (
+                          <span
+                            className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-slate-500 border border-panel"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
+                {oauthProviders && Object.values(oauthProviders).some((p) => !p.configured) && (
+                  <p className="text-[10px] text-muted text-center">
+                    Dimmed social providers are not configured on this server (see <span className="num">docs/OAUTH_SETUP.md</span>).
+                  </p>
+                )}
 
                 <div className="flex items-center justify-center gap-1.5 text-2xs text-emerald-300/90 pt-1">
                   <ShieldCheck size={12} strokeWidth={2} /> Secured — bcrypt hashing, TOTP &amp; HttpOnly cookies
-                </div>
-
-                {/* demo accounts (clearly labeled) */}
-                <div className="border border-amber-500/25 bg-amber-500/5 rounded-input px-3 py-2 mt-1">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-amber-300/90">Demo accounts · zero reviews seeded</p>
-                  <div className="flex flex-col gap-1 mt-1.5">
-                    <button type="button" className="text-left text-2xs text-muted hover:text-ink transition-colors" onClick={() => { setIdentifier('ava@skillswap.edu'); setPassword('student1234'); }}>
-                      <span className="num text-amber-200/80">ava@skillswap.edu</span> / student1234 — student
-                    </button>
-                    <button type="button" className="text-left text-2xs text-muted hover:text-ink transition-colors" onClick={() => { setIdentifier('admin@skillswap.edu'); setPassword('admin1234'); }}>
-                      <span className="num text-amber-200/80">admin@skillswap.edu</span> / admin1234 — administrator
-                    </button>
-                  </div>
                 </div>
               </form>
             )}
@@ -352,25 +640,56 @@ export default function AuthScreen() {
             {/* ---------------- SIGN UP ---------------- */}
             {view === 'signup' && (
               <form onSubmit={submitSignup} className="flex flex-col gap-3" noValidate>
-                {signupError && <p className="text-2xs text-red-300 border border-red-500/30 bg-red-500/10 rounded-input px-2.5 py-2" role="alert">{signupError}</p>}
+                <ErrorBanner err={signupError} />
                 <div>
                   <label className="label" htmlFor="su-name">Full Name</label>
-                  <input id="su-name" className="field" autoComplete="name" autoFocus value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Ava Rahman" required />
+                  <input
+                    id="su-name"
+                    className="field"
+                    autoComplete="name"
+                    autoFocus
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Your full name"
+                    required
+                  />
                 </div>
                 <div>
                   <label className="label" htmlFor="su-email">Email</label>
                   <div className="relative">
                     <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" strokeWidth={1.5} aria-hidden="true" />
-                    <input id="su-email" type="email" className="field !pl-9" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@university.edu" required />
+                    <input
+                      id="su-email"
+                      type="email"
+                      className="field !pl-9"
+                      autoComplete="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@university.edu"
+                      required
+                    />
                   </div>
                 </div>
                 <div>
                   <label className="label" htmlFor="su-password">Password</label>
                   <div className="relative">
                     <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" strokeWidth={1.5} aria-hidden="true" />
-                    <input id="su-password" className="field !pl-9 !pr-10" type={showSignupPassword ? 'text' : 'password'} autoComplete="new-password"
-                      value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} placeholder="Create a strong password" required />
-                    <button type="button" onClick={() => setShowSignupPassword((v) => !v)} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-ink" aria-label={showSignupPassword ? 'Hide password' : 'Show password'}>
+                    <input
+                      id="su-password"
+                      className="field !pl-9 !pr-10"
+                      type={showSignupPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      value={signupPassword}
+                      onChange={(e) => setSignupPassword(e.target.value)}
+                      placeholder="Create a strong password"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSignupPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-ink"
+                      aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
+                    >
                       {showSignupPassword ? <EyeOff size={16} strokeWidth={1.5} /> : <Eye size={16} strokeWidth={1.5} />}
                     </button>
                   </div>
@@ -419,7 +738,10 @@ export default function AuthScreen() {
                 <Mail size={30} strokeWidth={1.25} className="text-accent" aria-hidden="true" />
                 <div>
                   <h2 className="text-md font-bold text-ink">Verify your email</h2>
-                  <p className="text-xs text-muted mt-1">We sent a 6-digit code to <span className="text-ink font-medium">{pendingEmail}</span>.<br />Your account stays inactive until verification.</p>
+                  <p className="text-xs text-muted mt-1">
+                    We sent a 6-digit code to <span className="text-ink font-medium">{pendingEmail}</span>.<br />
+                    In local dev mode, the verification link &amp; code are also printed to the backend console.
+                  </p>
                 </div>
                 {devCode && (
                   <div className="border border-amber-500/30 bg-amber-500/10 rounded-input px-3 py-1.5 text-2xs text-amber-200">
@@ -435,7 +757,7 @@ export default function AuthScreen() {
                     {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
                   </button>
                   <span className="text-muted" aria-hidden="true">·</span>
-                  <button type="button" className="text-muted hover:text-ink" onClick={() => setView('signup')}>Use a different email</button>
+                  <button type="button" className="text-muted hover:text-ink" onClick={() => setView('login')}>Back to sign in</button>
                 </div>
               </form>
             )}
@@ -445,7 +767,7 @@ export default function AuthScreen() {
               <form onSubmit={submitForgot} className="flex flex-col gap-3.5">
                 <button type="button" className="self-start flex items-center gap-1 text-2xs text-muted hover:text-ink" onClick={() => setView('login')}><ArrowLeft size={12} /> Back to sign in</button>
                 <h2 className="text-md font-bold">Reset your password</h2>
-                <p className="text-xs text-muted">Enter your account email. We will send a 6-digit reset code. If the address exists, it arrives within a minute.</p>
+                <p className="text-xs text-muted">Enter your account email. We will send a 6-digit reset code (printed to the server console in dev mode when SMTP is unset).</p>
                 <div>
                   <label className="label" htmlFor="forgot-email">Email</label>
                   <input id="forgot-email" type="email" className="field" autoFocus value={pendingEmail} onChange={(e) => setPendingEmail(e.target.value)} placeholder="you@university.edu" required />
@@ -493,6 +815,78 @@ export default function AuthScreen() {
                 </button>
                 <button type="button" className="text-2xs text-accent hover:text-cyan-300" onClick={() => { setUseRecovery((v) => !v); setCode(''); setRecoveryCode(''); }}>
                   {useRecovery ? 'Use authenticator app instead' : 'Use a recovery code instead'}
+                </button>
+              </form>
+            )}
+
+            {/* ---------------- MANDATORY FIRST-LOGIN PASSWORD CHANGE ---------------- */}
+            {view === 'changePassword' && (
+              <form onSubmit={submitChangePassword} className="flex flex-col gap-3.5" noValidate>
+                <div className="flex items-center gap-2 text-amber-300">
+                  <KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />
+                  <h2 className="text-md font-bold text-ink">Change initial password</h2>
+                </div>
+                <p className="text-xs text-muted leading-relaxed">
+                  For security, you must replace the initial bootstrap password before accessing SkillSwap.
+                </p>
+                <ErrorBanner err={changePwError} />
+                <div>
+                  <label className="label" htmlFor="cp-current">Current bootstrap password</label>
+                  <input
+                    id="cp-current"
+                    type="password"
+                    className="field"
+                    autoComplete="current-password"
+                    value={currentPasswordInput}
+                    onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                    placeholder="Enter initial password"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="label" htmlFor="cp-new">New password</label>
+                  <div className="relative">
+                    <input
+                      id="cp-new"
+                      type={showNextPassword ? 'text' : 'password'}
+                      className="field !pr-10"
+                      autoComplete="new-password"
+                      autoFocus
+                      value={nextPasswordInput}
+                      onChange={(e) => setNextPasswordInput(e.target.value)}
+                      placeholder="10+ chars, uppercase, lowercase & digit"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNextPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-ink"
+                      aria-label={showNextPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showNextPassword ? <EyeOff size={16} strokeWidth={1.5} /> : <Eye size={16} strokeWidth={1.5} />}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1.5" aria-hidden="true">
+                    <div className="flex gap-1 flex-1">
+                      {[1, 2, 3, 4].map((i) => (
+                        <span key={i} className="h-1 flex-1 rounded-full transition-colors" style={{ background: changePwStrength >= i ? STRENGTH_COLOR[changePwStrength] : '#334155' }} />
+                      ))}
+                    </div>
+                    <span className="text-2xs font-semibold w-11 text-right" style={{ color: STRENGTH_COLOR[changePwStrength] }}>{STRENGTH_LABEL[changePwStrength]}</span>
+                  </div>
+                  <ul className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5">
+                    {PASSWORD_RULES.map((rule) => {
+                      const pass = rule.test(nextPasswordInput);
+                      return (
+                        <li key={rule.id} className={`flex items-center gap-1 text-[10px] ${pass ? 'text-emerald-400' : 'text-muted'}`}>
+                          <Check size={9} strokeWidth={3} aria-hidden="true" /> {rule.label}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+                <button type="submit" className="btn btn-primary w-full justify-center h-9 text-sm" disabled={busy}>
+                  {busy ? <Loader2 size={16} className="animate-spin" /> : <BadgeCheck size={15} strokeWidth={1.75} />} Update Password &amp; Continue
                 </button>
               </form>
             )}

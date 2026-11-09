@@ -1,5 +1,6 @@
 package edu.skillswap.config;
 
+import edu.skillswap.Api;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
@@ -10,6 +11,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 @Configuration
@@ -24,13 +26,35 @@ public class WebConfig implements WebMvcConfigurer {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(props.getCorsOrigins());
+        if (props.isProd()) {
+            config.setAllowedOrigins(props.getCorsOrigins());
+        } else {
+            List<String> patterns = new ArrayList<>(props.getCorsOrigins());
+            patterns.add("https://*.e2b.app");
+            config.setAllowedOriginPatterns(patterns);
+        }
         config.setAllowedMethods(List.of("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
+        config.setAllowedHeaders(List.of(
+                "Content-Type",
+                "X-CSRF-Token",
+                "x-csrf-token",
+                "Accept",
+                "Origin",
+                "X-Requested-With",
+                "Authorization",
+                Api.CORRELATION_HEADER));
+        config.setExposedHeaders(List.of(
+                Api.CORRELATION_HEADER,
+                "RateLimit-Limit",
+                "RateLimit-Remaining",
+                "RateLimit-Reset"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", config);
+        source.registerCorsConfiguration("/oauth2/**", config);
+        source.registerCorsConfiguration("/login/oauth2/**", config);
         return source;
     }
 

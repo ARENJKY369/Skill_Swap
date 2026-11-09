@@ -63,8 +63,16 @@ export const PASSWORD_RULES = [
   { id: 'digit', label: 'One digit', test: (p: string) => /[0-9]/.test(p) },
 ] as const;
 
+export function meetsPasswordPolicy(p: string): boolean {
+  return p.length <= 128 && PASSWORD_RULES.every((r) => r.test(p));
+}
+
 export function passwordStrength(p: string): 0 | 1 | 2 | 3 | 4 {
+  if (!p.length) return 0;
   const passing = PASSWORD_RULES.filter((r) => r.test(p)).length;
+  if (passing < PASSWORD_RULES.length) {
+    return Math.min(2, Math.max(1, passing - 1)) as 1 | 2;
+  }
   const bonus = /[^A-Za-z0-9]/.test(p) && p.length >= 12 ? 1 : 0;
-  return Math.min(4, Math.max(p.length ? 1 : 0, passing - 1 + bonus)) as 0 | 1 | 2 | 3 | 4;
+  return (3 + bonus) as 3 | 4;
 }

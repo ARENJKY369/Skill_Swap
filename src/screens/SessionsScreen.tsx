@@ -57,14 +57,27 @@ export default function SessionsScreen() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const nowIso = useMemo(() => new Date().toISOString(), [sessions]); // recompute per load
+  const nowIso = useMemo(() => new Date().toISOString(), [sessions]);
 
   const buckets = useMemo(() => {
     const all = sessions ?? [];
     const endOf = (s: SessionDto) => sessionEndIso(s.start, s.durationMin);
-    const incoming = all.filter((s) => s.recipient_id === me.id && (s.status === 'Pending' || s.status === 'Rescheduled'));
+    const needsMyDecision = (s: SessionDto) => {
+      if (s.status === 'Pending') return s.recipient_id === me.id;
+      if (s.status === 'Rescheduled') {
+        return s.proposed_by ? s.proposed_by !== me.id : s.recipient_id === me.id;
+      }
+      return false;
+    };
+
+    const incoming = all.filter((s) => needsMyDecision(s) && endOf(s) >= nowIso);
     const scheduled = all
-      .filter((s) => (s.status === 'Accepted' || (s.status === 'Rescheduled' && s.recipient_id !== me.id)) && endOf(s) >= nowIso)
+      .filter((s) => {
+        if (endOf(s) < nowIso) return false;
+        if (s.status === 'Accepted') return true;
+        if ((s.status === 'Pending' || s.status === 'Rescheduled') && !needsMyDecision(s)) return true;
+        return false;
+      })
       .sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
     const past = all
       .filter((s) => s.status === 'Completed' || s.status === 'Declined' || endOf(s) < nowIso)
@@ -143,6 +156,7 @@ export default function SessionsScreen() {
               const myFlag = isRecipient ? s.completed_by_recipient : s.completed_by_requester;
               const completable = canMarkCompleted(s.status, endIso, new Date().toISOString()) && myFlag === 0;
               const waitingForPartner = s.status === 'Accepted' && endIso < nowIso && myFlag === 1;
+              const awaitingPartnerReply = (s.status === 'Pending' || s.status === 'Rescheduled') && tab === 'scheduled';
               const canReview = s.status === 'Completed' && !reviewed.has(s.id);
               const partner = s.partner;
               return (
@@ -172,6 +186,9 @@ export default function SessionsScreen() {
                         <Video size={10} aria-hidden="true" /> <span className="truncate num">{s.meeting_url}</span> <ExternalLink size={9} />
                       </a>
                     )}
+                    {awaitingPartnerReply && (
+                      <p className="text-[10px] text-amber-300/90 mt-1">Awaiting partner response to your proposed time…</p>
+                    )}
                     {waitingForPartner && <p className="text-[10px] text-amber-300/90 mt-1">Waiting for your partner to confirm completion…</p>}
                   </div>
 
@@ -192,7 +209,7 @@ export default function SessionsScreen() {
                     )}
                     {tab === 'scheduled' && (
                       <>
-                        {s.meeting_url && isHttpsUrl(s.meeting_url) && (
+                        {s.status === 'Accepted' && s.meeting_url && isHttpsUrl(s.meeting_url) && (
                           <a className="btn btn-primary !py-1.5 text-2xs w-32 justify-center" href={s.meeting_url} target="_blank" rel="noopener noreferrer">
                             <Video size={12} /> Launch Session
                           </a>
@@ -200,6 +217,11 @@ export default function SessionsScreen() {
                         <button className="btn btn-ghost !py-1.5 text-2xs w-32 justify-center" onClick={() => { setRescheduleId((cur) => (cur === s.id ? null : s.id)); setRescheduleDate(''); }}>
                           Reschedule
                         </button>
+                        {awaitingPartnerReply && (
+                          <button className="btn btn-danger !py-1.5 text-2xs w-32 justify-center" disabled={busy} onClick={() => void act(s.id, { action: 'cancel' })}>
+                            <X size={12} /> Cancel Invite
+                          </button>
+                        )}
                         {completable && (
                           <button className="btn btn-subtle !py-1.5 text-2xs w-32 justify-center" disabled={busy} onClick={() => void act(s.id, { action: 'complete' })}>
                             <Check size={12} /> Mark Completed

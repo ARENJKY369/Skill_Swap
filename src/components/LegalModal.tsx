@@ -62,7 +62,8 @@ export default function LegalModal({ tab, onClose }: { tab: Tab; onClose: () => 
   const clearLocal = async () => {
     await clearLocalData();
     toast.success('Local data cleared', 'IndexedDB, cache and preferences were wiped from this device.');
-    window.location.assign('/login');
+    onClose();
+    navigate('/login', { replace: true });
   };
 
   const deleteAccount = async () => {
@@ -202,7 +203,7 @@ export default function LegalModal({ tab, onClose }: { tab: Tab; onClose: () => 
               <h3 className="text-xs font-bold text-ink uppercase tracking-wider">Cookie &amp; storage categories</h3>
               <div className="flex flex-col gap-2 mt-2">
                 {[
-                  { label: 'Essential', desc: 'Session cookie (HttpOnly, SameSite=Strict), CSRF token. Required for sign-in.', on: true, locked: true },
+                  { label: 'Essential', desc: 'Session cookie (HttpOnly, SameSite=Lax), CSRF token. Required for sign-in.', on: true, locked: true },
                   { label: 'Functional', desc: 'Remember Me duration and interface preferences stored in IndexedDB.', on: functional, locked: false, set: (v: boolean) => toggleCookie('cookie-functional', v, setFunctional) },
                   { label: 'Analytics', desc: 'Anonymous, aggregate usage counts. Off by default. No cross-site tracking.', on: analytics, locked: false, set: (v: boolean) => toggleCookie('cookie-analytics', v, setAnalytics) },
                 ].map(({ label, desc, on, locked, set }) => (

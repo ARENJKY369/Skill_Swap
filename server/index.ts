@@ -51,9 +51,13 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-const corsOrigin = process.env.CORS_ORIGIN?.split(',').map((s) => s.trim()).filter(Boolean);
-if (corsOrigin && corsOrigin.length > 0) {
-  app.use(cors({ origin: corsOrigin, credentials: true }));
+const rawCors = process.env.CORS_ORIGIN?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+const corsOrigins = Array.from(new Set([
+  ...rawCors,
+  ...(isProd ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173']),
+]));
+if (corsOrigins.length > 0) {
+  app.use(cors({ origin: corsOrigins, credentials: true }));
 }
 
 app.use(express.json({ limit: '4mb' }));

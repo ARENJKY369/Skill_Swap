@@ -16,6 +16,11 @@ export const uuid = () => randomUUID();
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -42,10 +47,22 @@ CREATE TABLE IF NOT EXISTS users (
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,
   restricted INTEGER NOT NULL DEFAULT 0,
-  demo INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  demo INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS oauth_accounts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_user_id TEXT NOT NULL,
+  email TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (provider, provider_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user ON oauth_accounts(user_id);
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
   id TEXT PRIMARY KEY,
@@ -62,6 +79,7 @@ CREATE TABLE IF NOT EXISTS mfa_pending (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
+  remember_me INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL
 );
@@ -82,6 +100,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Accepted','Declined','Rescheduled','Completed')),
   message TEXT NOT NULL DEFAULT '',
   meeting_url TEXT,
+  proposed_by TEXT,
   completed_by_requester INTEGER NOT NULL DEFAULT 0,
   completed_by_recipient INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -168,6 +187,37 @@ CREATE TABLE IF NOT EXISTS admin_metrics (
 );
 `);
 
+function ensureColumn(table: string, column: string, definition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('mfa_pending', 'remember_me', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('sessions', 'proposed_by', 'TEXT');
+
+const demoRows = db.prepare('SELECT id FROM users WHERE demo = 1').all() as Array<{ id: string }>;
+if (demoRows.length > 0) {
+  const purge = db.transaction(() => {
+    db.exec('DELETE FROM admin_metrics');
+    for (const { id } of demoRows) {
+      db.prepare('DELETE FROM oauth_accounts WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM mfa_pending WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM email_codes WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM connection_requests WHERE from_id = ? OR to_id = ?').run(id, id);
+      db.prepare('DELETE FROM reviews WHERE reviewer_id = ? OR reviewee_id = ?').run(id, id);
+      db.prepare('DELETE FROM sessions WHERE requester_id = ? OR recipient_id = ?').run(id, id);
+      db.prepare('DELETE FROM audit_log WHERE actor_id = ?').run(id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    }
+  });
+  purge();
+}
+
 export interface UserRow {
   id: string; name: string; email: string; username: string; password_hash: string;
   role: 'student' | 'admin'; major: string; university: string; year: string; bio: string;
@@ -175,7 +225,7 @@ export interface UserRow {
   avg_rating: number; review_count: number; status: 'online' | 'busy' | 'offline';
   email_verified: number; totp_enabled: number; totp_secret: string | null;
   recovery_codes: string; failed_attempts: number; locked_until: string | null;
-  restricted: number; demo: number; created_at: string; updated_at: string;
+  restricted: number; must_change_password: number; demo: number; created_at: string; updated_at: string;
 }
 
 export interface PublicUser {
@@ -183,7 +233,7 @@ export interface PublicUser {
   major: string; university: string; year: string; bio: string; avatar: string | null;
   teaches: string[]; wants: string[]; teachLevels: Record<string, string>; wantLevels: Record<string, string>;
   avgRating: number; reviewCount: number; status: string; emailVerified: boolean;
-  totpEnabled: boolean; restricted: boolean; demo: boolean; createdAt: string;
+  totpEnabled: boolean; restricted: boolean; mustChangePassword: boolean; demo: boolean; createdAt: string;
 }
 
 const parseJson = <T,>(raw: string | null | undefined, fallback: T): T => {
@@ -199,7 +249,8 @@ export function publicUser(u: UserRow): PublicUser {
     teachLevels: parseJson(u.teach_levels, {}), wantLevels: parseJson(u.want_levels, {}),
     avgRating: Math.round(u.avg_rating * 10) / 10, reviewCount: u.review_count,
     status: u.status, emailVerified: u.email_verified === 1, totpEnabled: u.totp_enabled === 1,
-    restricted: u.restricted === 1, demo: u.demo === 1, createdAt: u.created_at,
+    restricted: u.restricted === 1, mustChangePassword: u.must_change_password === 1,
+    demo: u.demo === 1, createdAt: u.created_at,
   };
 }
 
@@ -209,7 +260,7 @@ export function getUserById(id: string): UserRow | undefined {
 
 export function getUserByIdentifier(identifier: string): UserRow | undefined {
   const q = identifier.trim().toLowerCase();
-  return db.prepare('SELECT * FROM users WHERE email = ? OR username = ?').get(q, q) as UserRow | undefined;
+  return db.prepare('SELECT * FROM users WHERE lower(email) = ? OR lower(username) = ?').get(q, q) as UserRow | undefined;
 }
 
 export function notify(userId: string, title: string, body: string, kind = 'info', refId?: string) {
