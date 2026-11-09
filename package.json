@@ -8,14 +8,24 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:server:java\" \"npm:dev:web\"",
+    "dev:node": "concurrently -n api,web -c cyan,magenta \"npm:dev:server:node\" \"npm:dev:web\"",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "dev:server:node": "npm run dev:server",
+    "dev:server:java": "./mvnw spring-boot:run",
     "build": "vite build",
-    "start": "NODE_ENV=production tsx server/index.ts",
+    "build:java": "./mvnw -DskipTests package",
+    "start": "./mvnw spring-boot:run -Dspring-boot.run.jvmArguments=\"-DAPP_ENV=production\"",
+    "start:java": "./mvnw spring-boot:run -Dspring-boot.run.jvmArguments=\"-DAPP_ENV=production\"",
+    "start:jar": "java -DAPP_ENV=production -jar target/skillswap-backend-2.4.9.jar",
+    "start:node": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed": "tsx server/seed.ts"
+    "test:java": "./mvnw test",
+    "seed": "tsx server/seed.ts",
+    "seed:java": "./mvnw spring-boot:run -Dspring-boot.run.arguments=--seed",
+    "e2e:java": "bash scripts/e2e.sh"
   },
   "dependencies": {
     "bcryptjs": "3.0.3",
