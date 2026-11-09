@@ -6,3 +6,7 @@ data/*.db-*
 *.log
 .DS_Store
 coverage/
+target/
+*.jar
+*.class
+.mvn/wrapper/maven-wrapper.jar
