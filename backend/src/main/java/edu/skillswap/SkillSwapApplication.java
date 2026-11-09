@@ -3,6 +3,7 @@ package edu.skillswap;
 import edu.skillswap.config.AppProperties;
 import edu.skillswap.config.DatabaseInitializer;
 import edu.skillswap.config.SeedService;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -23,29 +24,36 @@ public class SkillSwapApplication {
         SpringApplication.run(SkillSwapApplication.class, args);
     }
 
+    /**
+     * Runs schema creation, demo-account purge migrations, skill catalog seeding,
+     * and optional first-admin bootstrap BEFORE embedded Tomcat serves HTTP traffic.
+     */
     @Bean
-    ApplicationRunner startupRunner(DatabaseInitializer dbInit, SeedService seedService, AppProperties props) {
-        return args -> {
+    SmartInitializingSingleton databaseStartupBootstrap(DatabaseInitializer dbInit, SeedService seedService) {
+        return () -> {
             dbInit.initSchemaAndVerify();
+            seedService.seedIfEmpty(false);
+            seedService.bootstrapAdminIfNeeded();
+        };
+    }
+
+    @Bean
+    ApplicationRunner startupRunner(SeedService seedService, AppProperties props) {
+        return args -> {
             List<String> rawArgs = Arrays.asList(args.getSourceArgs());
             boolean seedCmd = rawArgs.contains("--seed");
             boolean force = rawArgs.contains("--force");
             if (seedCmd) {
-                if (force) {
-                    System.out.println("[seed] --force: wiping and reseeding");
-                }
                 seedService.seedIfEmpty(force);
                 System.exit(0);
             }
-            seedService.seedIfEmpty(false);
             System.out.printf("[skillswap] listening on 0.0.0.0:%d (%s)%n",
                     props.getPort(), props.isProd() ? "production" : "development");
         };
     }
 
     /**
-     * Loads .env from current working directory (without overriding existing OS env vars),
-     * mirroring server/env.ts.
+     * Loads .env from current working directory (without overriding existing OS env vars).
      */
     private static void loadDotEnv() {
         Path envFile = Path.of(".env");

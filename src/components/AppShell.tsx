@@ -5,7 +5,6 @@ import TitleBar from './TitleBar';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import StatusBar from './StatusBar';
-import Toaster from './Toaster';
 import ScheduleSessionDialog from './ScheduleSessionDialog';
 import LegalModal from './LegalModal';
 import Dialog from './Dialog';
@@ -173,7 +172,6 @@ export default function AppShell() {
         </div>
       </div>
 
-      <Toaster />
       {scheduleOpen && <ScheduleSessionDialog onClose={() => setScheduleOpen(false)} />}
       {legalTab && <LegalModal tab={legalTab} onClose={() => setLegalTab(null)} />}
 

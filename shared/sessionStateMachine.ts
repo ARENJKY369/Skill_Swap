@@ -2,7 +2,7 @@
  * Learning-session lifecycle:
  *   Pending → Accepted → Completed
  *   Pending → Declined
- *   Pending → Rescheduled → Accepted / Declined
+ *   Pending → Rescheduled → Accepted / Declined / Rescheduled
  * Terminal states (Completed, Declined) have no outbound transitions.
  */
 export type SessionStatus =
@@ -23,7 +23,7 @@ export const SESSION_STATUSES: readonly SessionStatus[] = [
 const TRANSITIONS: Record<SessionStatus, readonly SessionStatus[]> = {
   Pending: ['Accepted', 'Declined', 'Rescheduled'],
   Accepted: ['Completed', 'Rescheduled', 'Declined'],
-  Rescheduled: ['Accepted', 'Declined'],
+  Rescheduled: ['Accepted', 'Declined', 'Rescheduled'],
   Completed: [],
   Declined: [],
 };
@@ -38,13 +38,13 @@ export function assertTransition(from: SessionStatus, to: SessionStatus): void {
   }
 }
 
-/** Both parties may mark a session completed once its end time has passed. */
+/** Both parties may mark an Accepted session completed once its end time has passed. */
 export function canMarkCompleted(
   status: SessionStatus,
   sessionEndIso: string,
   nowIso: string = new Date().toISOString(),
 ): boolean {
-  if (status !== 'Accepted' && status !== 'Rescheduled') return false;
+  if (status !== 'Accepted') return false;
   const end = Date.parse(sessionEndIso);
   const now = Date.parse(nowIso);
   if (Number.isNaN(end) || Number.isNaN(now)) return false;

@@ -21,7 +21,7 @@ public class UserRepository {
 
     public Map<String, Object> getUserByIdentifier(String identifier) {
         String q = identifier == null ? "" : identifier.trim().toLowerCase();
-        return DbSupport.one(jdbc, "SELECT * FROM users WHERE email = ? OR username = ?", q, q);
+        return DbSupport.one(jdbc, "SELECT * FROM users WHERE lower(email) = ? OR lower(username) = ?", q, q);
     }
 
     public Map<String, Object> publicUser(String id) {
@@ -30,6 +30,6 @@ public class UserRepository {
 
     public List<Map<String, Object>> candidatesExcept(String id) {
         return DbSupport.list(jdbc,
-                "SELECT * FROM users WHERE id != ? AND role = 'student' AND restricted = 0", id);
+                "SELECT * FROM users WHERE id != ? AND role = 'student' AND restricted = 0 AND email_verified = 1", id);
     }
 }

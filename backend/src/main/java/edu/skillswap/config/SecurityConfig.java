@@ -1,6 +1,7 @@
 package edu.skillswap.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import edu.skillswap.security.CorrelationIdFilter;
 import edu.skillswap.security.CsrfDoubleSubmitFilter;
 import edu.skillswap.security.SessionAuthFilter;
 import edu.skillswap.service.AuditService;
@@ -47,8 +48,9 @@ public class SecurityConfig {
         // Filters are intentionally NOT beans: a CompositeFilter prevents Spring Boot
         // from auto-registering them a second time as servlet filters.
         List<Filter> apiFilters = List.of(
+                new CorrelationIdFilter(),
                 new CsrfDoubleSubmitFilter(cookies, audit, mapper),
-                new SessionAuthFilter(jdbc, users, cookies));
+                new SessionAuthFilter(jdbc, users, cookies, mapper));
         CompositeFilter composite = new CompositeFilter();
         composite.setFilters(apiFilters);
 
@@ -57,12 +59,12 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/api/**").permitAll()
+                        .requestMatchers(HttpMethod.OPTIONS, "/api/**", "/oauth2/**", "/login/oauth2/**").permitAll()
                         .anyRequest().permitAll())
                 .formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
-                .requestCache(cache -> cache.disable())
+                .requestCache(AbstractHttpConfigurer::disable)
                 .headers(headers -> {
                     headers.frameOptions(frame -> frame.deny());
                     headers.contentTypeOptions(Customizer.withDefaults());

@@ -40,11 +40,15 @@ public class CsrfDoubleSubmitFilter extends OncePerRequestFilter {
         String cookieToken = cookies.read(request, CookieService.CSRF_COOKIE);
         String headerToken = request.getHeader(CookieService.CSRF_HEADER);
         if (cookieToken == null || headerToken == null || !DbSupport.safeEqual(cookieToken, headerToken)) {
+            String correlationId = Api.correlationId(request);
             audit.log(null, "csrf_rejected", DbSupport.clientIp(request), "denied",
-                    request.getMethod() + " " + path);
+                    request.getMethod() + " " + path + " (" + correlationId + ")");
             response.setStatus(403);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-            mapper.writeValue(response.getOutputStream(), Api.map("error", "Invalid CSRF token"));
+            mapper.writeValue(response.getOutputStream(), Api.map(
+                    "error", "Invalid CSRF token",
+                    "code", "CSRF_INVALID",
+                    "correlationId", correlationId));
             return;
         }
         chain.doFilter(request, response);

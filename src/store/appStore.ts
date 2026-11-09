@@ -6,7 +6,7 @@ export interface PublicUser {
   teaches: string[]; wants: string[];
   teachLevels: Record<string, string>; wantLevels: Record<string, string>;
   avgRating: number; reviewCount: number; status: string; emailVerified: boolean;
-  totpEnabled: boolean; restricted: boolean; demo: boolean; createdAt: string;
+  totpEnabled: boolean; restricted: boolean; mustChangePassword?: boolean; demo: boolean; createdAt: string;
 }
 
 export type SyncState = 'synced' | 'pending' | 'offline' | 'error';

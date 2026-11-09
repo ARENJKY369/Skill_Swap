@@ -22,7 +22,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,15 +73,46 @@ public class AdminController {
         admin(request);
         Query query = Query.of(request, "skill");
         String skill = query.string("skill", "Java OOP", 80);
-        List<Map<String, Object>> rows = DbSupport.list(jdbc,
-                "SELECT day, matches, sessions FROM admin_metrics WHERE skill = ? ORDER BY day ASC", skill);
-        List<Map<String, Object>> distinct = DbSupport.list(jdbc,
-                "SELECT DISTINCT skill FROM admin_metrics ORDER BY skill");
-        List<String> skills = new ArrayList<>();
-        for (Map<String, Object> row : distinct) {
-            skills.add(DbSupport.str(row, "skill"));
+
+        // Compute real 30-day engagement counts from sessions and connection_requests
+        Map<String, Integer> matchesByDay = new HashMap<>();
+        List<Map<String, Object>> reqRows = DbSupport.list(jdbc, """
+                SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n
+                FROM connection_requests
+                WHERE skill = ? AND substr(created_at, 1, 10) >= ?
+                GROUP BY substr(created_at, 1, 10)
+                """, skill, LocalDate.now().minusDays(29).toString());
+        for (Map<String, Object> r : reqRows) {
+            matchesByDay.put(DbSupport.str(r, "day"), DbSupport.intVal(r, "n"));
         }
-        return ResponseEntity.ok(Api.map("skill", skill, "points", rows, "skills", skills));
+
+        Map<String, Integer> sessionsByDay = new HashMap<>();
+        List<Map<String, Object>> sessRows = DbSupport.list(jdbc, """
+                SELECT substr(s.start, 1, 10) AS day, COUNT(*) AS n
+                FROM sessions s JOIN skills sk ON sk.id = s.skill_id
+                WHERE sk.name = ? AND s.status IN ('Accepted','Completed') AND substr(s.start, 1, 10) >= ?
+                GROUP BY substr(s.start, 1, 10)
+                """, skill, LocalDate.now().minusDays(29).toString());
+        for (Map<String, Object> r : sessRows) {
+            sessionsByDay.put(DbSupport.str(r, "day"), DbSupport.intVal(r, "n"));
+        }
+
+        List<Map<String, Object>> points = new ArrayList<>();
+        for (int i = 29; i >= 0; i--) {
+            String day = LocalDate.now().minusDays(i).toString();
+            points.add(Api.map(
+                    "day", day,
+                    "matches", matchesByDay.getOrDefault(day, 0),
+                    "sessions", sessionsByDay.getOrDefault(day, 0)));
+        }
+
+        List<Map<String, Object>> catalogSkills = DbSupport.list(jdbc,
+                "SELECT name FROM skills ORDER BY name LIMIT 50");
+        List<String> skills = new ArrayList<>();
+        for (Map<String, Object> row : catalogSkills) {
+            skills.add(DbSupport.str(row, "name"));
+        }
+        return ResponseEntity.ok(Api.map("skill", skill, "points", points, "skills", skills));
     }
 
     @GetMapping("/api/admin/users")
@@ -221,7 +254,7 @@ public class AdminController {
         admin(request);
         return ResponseEntity.ok(Api.map("skills", DbSupport.list(jdbc, """
                 SELECT sk.id, sk.name, sk.category,
-                       (SELECT COUNT(*) FROM users WHERE teaches LIKE '%' || sk.name || '%') AS teach_count
+                       (SELECT COUNT(*) FROM users WHERE teaches LIKE '%"' || sk.name || '"%') AS teach_count
                 FROM skills sk ORDER BY sk.category, sk.name
                 """)));
     }
@@ -251,6 +284,7 @@ public class AdminController {
     }
 
     private void wipeUser(String id) {
+        jdbc.update("DELETE FROM oauth_accounts WHERE user_id = ?", id);
         jdbc.update("DELETE FROM auth_sessions WHERE user_id = ?", id);
         jdbc.update("DELETE FROM mfa_pending WHERE user_id = ?", id);
         jdbc.update("DELETE FROM email_codes WHERE user_id = ?", id);

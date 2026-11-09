@@ -12,9 +12,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -259,6 +257,7 @@ public final class DbSupport {
         out.put("emailVerified", bool(row, "email_verified"));
         out.put("totpEnabled", bool(row, "totp_enabled"));
         out.put("restricted", bool(row, "restricted"));
+        out.put("mustChangePassword", bool(row, "must_change_password"));
         out.put("demo", bool(row, "demo"));
         out.put("createdAt", str(row, "created_at"));
         return out;

@@ -21,6 +21,7 @@ export interface SessionDto {
   status: 'Pending' | 'Accepted' | 'Declined' | 'Rescheduled' | 'Completed';
   message: string;
   meeting_url: string | null;
+  proposed_by?: string | null;
   completed_by_requester: number;
   completed_by_recipient: number;
   partner: { id: string; name: string; username: string; avatar: string | null; status: string; major: string } | null;

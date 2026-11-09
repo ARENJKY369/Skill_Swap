@@ -39,6 +39,7 @@ export default function ScheduleSessionDialog({ prefill, onClose, onCreated }: {
   const toast = useToast();
   const me = useAppStore((s) => s.user);
   const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [peers, setPeers] = useState<PublicUser[]>([]);
   const [skills, setSkills] = useState<Array<{ id: string; name: string }>>([]);
   const [recipientId, setRecipientId] = useState(prefill?.recipientId ?? '');
   const [skillId, setSkillId] = useState(prefill?.skillId ?? '');
@@ -56,11 +57,14 @@ export default function ScheduleSessionDialog({ prefill, onClose, onCreated }: {
   const draftTimer = useRef<number | null>(null);
   const restored = useRef(false);
 
-  /* load partner + topic options */
+  /* load partner + topic options (matches + all verified peers so fresh users can schedule immediately) */
   useEffect(() => {
     api.get<{ matches: MatchRow[] }>('/api/users/matches/list')
       .then((d) => setMatches(d.matches))
-      .catch(() => { /* offline: allow manual entry */ });
+      .catch(() => setMatches([]));
+    api.get<{ users: PublicUser[] }>('/api/users/explorer?limit=60')
+      .then((d) => setPeers(d.users))
+      .catch(() => setPeers([]));
     api.get<{ skills: Array<{ id: string; name: string }> }>('/api/skills')
       .then((d) => setSkills(d.skills))
       .catch(() => setSkills([]));
@@ -102,17 +106,33 @@ export default function ScheduleSessionDialog({ prefill, onClose, onCreated }: {
     return () => { if (draftTimer.current) window.clearTimeout(draftTimer.current); };
   }, [recipientId, skillId, date, time, durationMin, message, meetingUrl]);
 
-  const partner = matches.find((m) => m.user.id === recipientId)?.user
-    ?? null;
+  const partnerOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{ user: PublicUser; score?: number }> = [];
+    for (const m of matches) {
+      seen.add(m.user.id);
+      list.push({ user: m.user, score: m.score });
+    }
+    for (const p of peers) {
+      if (!seen.has(p.id)) {
+        seen.add(p.id);
+        list.push({ user: p });
+      }
+    }
+    return list;
+  }, [matches, peers]);
+
+  const partner = partnerOptions.find((m) => m.user.id === recipientId)?.user ?? null;
 
   const topicOptions = useMemo(() => {
     const mine = me?.teaches ?? [];
     const theirs = partner?.teaches ?? [];
     const names = [...new Set([...mine, ...theirs])];
     const byName = new Map(skills.map((s) => [s.name, s]));
-    return names
-      .map((n) => byName.get(n) ?? { id: n, name: n })
-      .filter(Boolean);
+    const matched = names
+      .map((n) => byName.get(n))
+      .filter((s): s is { id: string; name: string } => Boolean(s));
+    return matched.length > 0 ? matched : skills.slice(0, 60);
   }, [me?.teaches, partner?.teaches, skills]);
 
   /* calendar grid */
@@ -191,14 +211,18 @@ export default function ScheduleSessionDialog({ prefill, onClose, onCreated }: {
             <label className="label" htmlFor="ss-partner">Partner</label>
             <select id="ss-partner" className="field" value={recipientId} onChange={(e) => setRecipientId(e.target.value)}>
               <option value="">Select a student…</option>
-              {matches.map(({ user: u, score }) => (
-                <option key={u.id} value={u.id}>{u.name} — {u.teaches.slice(0, 2).join(', ')} ({score}%)</option>
-              ))}
+              {partnerOptions.map(({ user: u, score }) => {
+                const skillsText = u.teaches.length > 0 ? ` — ${u.teaches.slice(0, 2).join(', ')}` : '';
+                const scoreText = score !== undefined ? ` (${score}%)` : '';
+                return (
+                  <option key={u.id} value={u.id}>{u.name}{skillsText}{scoreText}</option>
+                );
+              })}
             </select>
             {partner && (
               <div className="flex items-center gap-2 mt-1.5 text-2xs text-muted">
                 <Avatar name={partner.name} src={partner.avatar} size={16} />
-                <span className="truncate">@{partner.username} · {partner.major}</span>
+                <span className="truncate">@{partner.username} · {partner.major || 'Student'}</span>
               </div>
             )}
           </div>
@@ -258,7 +282,6 @@ export default function ScheduleSessionDialog({ prefill, onClose, onCreated }: {
             <select id="ss-topic" className="field" value={skillId} onChange={(e) => setSkillId(e.target.value)}>
               <option value="">Select topic…</option>
               {topicOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              {topicOptions.length === 0 && skills.slice(0, 60).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
           <div>

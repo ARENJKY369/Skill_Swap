@@ -51,10 +51,10 @@ public class TotpService {
     public String qrDataUrl(String uri) {
         try {
             Map<EncodeHintType, Object> hints = new HashMap<>();
-            hints.put(EncodeHintType.MARGIN, 1);
+            hints.put(EncodeHintType.MARGIN, 2);
             hints.put(EncodeHintType.CHARACTER_SET, "UTF-8");
             BitMatrix matrix = new QRCodeWriter().encode(uri, BarcodeFormat.QR_CODE, 200, 200, hints);
-            MatrixToImageConfig config = new MatrixToImageConfig(0xFFF8FAFC, 0xFF1E293B);
+            MatrixToImageConfig config = new MatrixToImageConfig(0xFF0F172A, 0xFFFFFFFF);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             MatrixToImageWriter.writeToStream(matrix, "PNG", out, config);
             return "data:image/png;base64," + Base64.getEncoder().encodeToString(out.toByteArray());

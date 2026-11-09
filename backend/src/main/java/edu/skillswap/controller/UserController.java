@@ -105,11 +105,11 @@ public class UserController {
         String like = "%" + q + "%";
         List<Map<String, Object>> rows = DbSupport.list(jdbc, """
                 SELECT DISTINCT u.* FROM users u
-                WHERE u.id != ? AND u.restricted = 0 AND u.role = 'student'
+                WHERE u.id != ? AND u.restricted = 0 AND u.role = 'student' AND u.email_verified = 1
                   AND (? = '' OR lower(u.name) LIKE ? OR lower(u.username) LIKE ? OR lower(u.teaches) LIKE ? OR lower(u.wants) LIKE ?)
                   AND (? = 'All' OR EXISTS (
                     SELECT 1 FROM skills sk
-                    WHERE sk.category = ? AND (u.teaches LIKE '%' || sk.name || '%' OR u.wants LIKE '%' || sk.name || '%')
+                    WHERE sk.category = ? AND (u.teaches LIKE '%"' || sk.name || '"%' OR u.wants LIKE '%"' || sk.name || '"%')
                   ))
                 ORDER BY u.status = 'online' DESC, u.name COLLATE NOCASE
                 LIMIT ?
@@ -162,7 +162,7 @@ public class UserController {
                                                        HttpServletRequest request,
                                                        HttpServletResponse response) {
         AuthUser me = AuthContext.requireAuth(request);
-        rateLimit.check("invite", request, response, 30, 60 * 60 * 1000L, "Too many invites. Try again later.");
+        rateLimit.check("invite", request, response, 30, 60 * 60 * 1000L, "Too many attempts");
         Map<String, Object> target = users.getUserById(id);
         if (target == null || DbSupport.bool(target, "restricted") || DbSupport.str(target, "id").equals(me.id())) {
             throw new ApiException(404, "User not found");
@@ -202,6 +202,29 @@ public class UserController {
                 WHERE cr.from_id = ? ORDER BY cr.created_at DESC
                 """, me.id());
         return ResponseEntity.ok(Api.map("incoming", incoming, "outgoing", outgoing));
+    }
+
+    @PatchMapping("/api/users/me/requests/{id}")
+    public ResponseEntity<Map<String, Object>> actOnRequest(@PathVariable String id,
+                                                            @Valid @RequestBody Requests.ConnectionRequestAction body,
+                                                            HttpServletRequest request) {
+        AuthUser me = AuthContext.requireAuth(request);
+        Map<String, Object> row = DbSupport.one(jdbc,
+                "SELECT * FROM connection_requests WHERE id = ? AND to_id = ?", id, me.id());
+        if (row == null) {
+            throw new ApiException(404, "Connection request not found");
+        }
+        String newStatus = "accept".equals(body.action) ? "Accepted" : "Declined";
+        jdbc.update("UPDATE connection_requests SET status = ? WHERE id = ?", newStatus, id);
+        String fromId = DbSupport.str(row, "from_id");
+        String myName = DbSupport.str(me.row(), "name");
+        DbSupport.notify(jdbc, fromId,
+                "Connection request " + newStatus.toLowerCase(Locale.ROOT),
+                myName + " " + newStatus.toLowerCase(Locale.ROOT) + " your connection request.",
+                "request", me.id());
+        audit.log(me.id(), "connection_request_" + newStatus.toLowerCase(Locale.ROOT),
+                Api.clientIp(request), "success", id);
+        return ResponseEntity.ok(Api.map("ok", true, "status", newStatus));
     }
 
     @GetMapping("/api/users/matches/list")
