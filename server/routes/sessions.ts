@@ -57,8 +57,6 @@ sessionsRouter.post('/', inviteLimiter, validateBody(createSchema), (req, res) =
   const startIso = new Date(`${b.date}T${b.time}:00`).toISOString();
   if (Number.isNaN(Date.parse(startIso))) { res.status(400).json({ error: 'Invalid date/time' }); return; }
   if (Date.parse(startIso) < Date.now() - 60_000) { res.status(400).json({ error: 'Cannot schedule in the past' }); return; }
-  const endIso = new Date(Date.parse(startIso) + b.durationMin * 60_000).toISOString();
-
   // Double-booking guard for both participants (JS-side overlap; ISO strings).
   const active = db.prepare(`
     SELECT id, start, duration_min FROM sessions

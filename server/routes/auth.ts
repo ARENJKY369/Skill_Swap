@@ -101,7 +101,14 @@ const DUMMY_HASH = bcrypt.hashSync('timing-equalization-dummy', 10);
 
 const publicAuthUser = (u: UserRow) => publicUser(u);
 
-authRouter.get('/csrf', (_req, res) => {
+authRouter.get('/csrf', (req, res) => {
+  // Idempotent: return the existing valid cookie token instead of rotating it.
+  // Rotating on every call desyncs concurrent clients (header != cookie -> 403).
+  const existing = req.cookies?.[CSRF_COOKIE] as string | undefined;
+  if (existing && existing.length >= 32) {
+    res.json({ csrfToken: existing });
+    return;
+  }
   res.json({ csrfToken: issueCsrfCookie(res) });
 });
 

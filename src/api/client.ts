@@ -18,13 +18,34 @@ export class ApiError extends Error {
   }
 }
 
+const CSRF_COOKIE = 'ss_csrf';
+
+/** Read the current ss_csrf cookie (exposed as httpOnly=false for double-submit). */
+function cookieToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(?:^|; )' + CSRF_COOKIE + '=([^;]*)'));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 let csrfToken: string | null = null;
+let csrfInflight: Promise<string> | null = null;
 
 async function refreshCsrf(): Promise<string> {
-  const res = await fetch('/api/auth/csrf', { credentials: 'same-origin' });
-  const data = (await res.json()) as { csrfToken: string };
-  csrfToken = data.csrfToken;
-  return csrfToken;
+  // Dedupe concurrent refreshes: everyone shares one fetch, one token.
+  if (csrfInflight) return csrfInflight;
+  csrfInflight = (async () => {
+    // If the cookie already holds a token (e.g. issued earlier), reuse it.
+    const existing = cookieToken();
+    if (existing) {
+      csrfToken = existing;
+      return existing;
+    }
+    const res = await fetch('/api/auth/csrf', { credentials: 'same-origin' });
+    const data = (await res.json()) as { csrfToken: string };
+    csrfToken = data.csrfToken;
+    return csrfToken;
+  })().finally(() => { csrfInflight = null; });
+  return csrfInflight;
 }
 
 interface RequestOptions {
@@ -37,16 +58,18 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   const mutating = method !== 'GET';
   if (mutating && !csrfToken) await refreshCsrf();
 
-  const doFetch = async (token: string | null) =>
-    fetch(path, {
+  const doFetch = async (token: string | null) => {
+    const headerToken = token ? (cookieToken() ?? token) : token;
+    return fetch(path, {
       method,
       credentials: 'same-origin',
       headers: {
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { 'x-csrf-token': token } : {}),
+        ...(headerToken ? { 'x-csrf-token': headerToken } : {}),
       },
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
+  };
 
   let res = await doFetch(csrfToken);
   if (mutating && res.status === 403) {
