@@ -1,5 +1,6 @@
 package edu.skillswap.config;
 
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -33,7 +34,7 @@ public class AppProperties {
     private final String linkedinClientId;
     private final String linkedinClientSecret;
 
-    public AppProperties() {
+    public AppProperties(Environment environment) {
         String nodeEnv = env("NODE_ENV", "");
         String appEnv = env("APP_ENV", "");
         String profiles = env("SPRING_PROFILES_ACTIVE", "");
@@ -92,18 +93,16 @@ public class AppProperties {
         this.adminEmail = env("ADMIN_EMAIL", "").trim();
         this.adminInitialPassword = env("ADMIN_INITIAL_PASSWORD", "");
 
-        this.googleClientId = env("GOOGLE_CLIENT_ID", "").trim();
-        this.googleClientSecret = env("GOOGLE_CLIENT_SECRET", "").trim();
-        this.facebookClientId = env("FACEBOOK_CLIENT_ID", "").trim();
-        this.facebookClientSecret = env("FACEBOOK_CLIENT_SECRET", "").trim();
+        this.googleClientId = environment.getProperty("skillswap.oauth.google.client-id", "").trim();
+        this.googleClientSecret = environment.getProperty("skillswap.oauth.google.client-secret", "").trim();
+        this.facebookClientId = environment.getProperty("skillswap.oauth.facebook.client-id", "").trim();
+        this.facebookClientSecret = environment.getProperty("skillswap.oauth.facebook.client-secret", "").trim();
 
-        String twId = env("TWITTER_CLIENT_ID", "").trim();
-        String twSecret = env("TWITTER_CLIENT_SECRET", "").trim();
-        this.twitterClientId = !twId.isBlank() ? twId : env("X_CLIENT_ID", "").trim();
-        this.twitterClientSecret = !twSecret.isBlank() ? twSecret : env("X_CLIENT_SECRET", "").trim();
+        this.twitterClientId = environment.getProperty("skillswap.oauth.twitter.client-id", "").trim();
+        this.twitterClientSecret = environment.getProperty("skillswap.oauth.twitter.client-secret", "").trim();
 
-        this.linkedinClientId = env("LINKEDIN_CLIENT_ID", "").trim();
-        this.linkedinClientSecret = env("LINKEDIN_CLIENT_SECRET", "").trim();
+        this.linkedinClientId = environment.getProperty("skillswap.oauth.linkedin.client-id", "").trim();
+        this.linkedinClientSecret = environment.getProperty("skillswap.oauth.linkedin.client-secret", "").trim();
     }
 
     private static String stripTrailingSlash(String url) {
